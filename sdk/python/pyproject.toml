@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantdesk-strategy-sdk"
+version = "0.1.0"
+description = "Starter Python SDK for the future versioned QuantDesk strategy protocol"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["quantdesk_sdk"]

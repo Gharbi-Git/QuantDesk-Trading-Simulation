@@ -1,0 +1,15 @@
+.git
+.vs
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/target
+**/out
+**/.venv
+**/__pycache__
+**/TestResults
+**/*.user
+**/.env
+**/.env.*
+!**/.env.example

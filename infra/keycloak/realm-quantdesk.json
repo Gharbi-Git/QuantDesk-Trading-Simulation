@@ -1,0 +1,11 @@
+{
+  "realm": "quantdesk",
+  "enabled": true,
+  "displayName": "QuantDesk Development",
+  "roles": {
+    "realm": [
+      { "name": "PLAYER" },
+      { "name": "ADMIN" }
+    ]
+  }
+}

@@ -6,4 +6,4 @@ Initial structure only. Initialize these three production projects next:
 - `src/QuantDesk.Modules` (business modules with Onion layers)
 
 Add tests in `tests/`. Use .NET 10 selected by repository root `global.json`.
-No .sln/.csproj files are fabricated by this scaffold.
+The buildable .NET 10 solution and baseline tests are initialized by scripts/setup/Initialize-QuantDesk-Projects.ps1.

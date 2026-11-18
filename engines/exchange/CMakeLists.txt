@@ -1,3 +1,3 @@
-# exchange [D2]
-# C++20 target will be defined in its implementation PR.
-# This empty CMake file intentionally allows root configure to succeed.
+add_executable(quantdesk_exchange src/main.cpp)
+target_compile_features(quantdesk_exchange PRIVATE cxx_std_20)
+add_test(NAME exchange_bootstrap COMMAND quantdesk_exchange)

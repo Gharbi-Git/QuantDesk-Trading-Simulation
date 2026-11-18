@@ -1,3 +1,6 @@
-# quant-core [D1]
-# C++20 target will be defined in its implementation PR.
-# This empty CMake file intentionally allows root configure to succeed.
+add_library(quantdesk_quant_core STATIC src/build_info.cpp)
+target_include_directories(quantdesk_quant_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(quantdesk_quant_core PUBLIC cxx_std_20)
+add_executable(quantdesk_quant_core_smoke tests/unit/build_info_test.cpp)
+target_link_libraries(quantdesk_quant_core_smoke PRIVATE quantdesk_quant_core)
+add_test(NAME quant_core_bootstrap COMMAND quantdesk_quant_core_smoke)

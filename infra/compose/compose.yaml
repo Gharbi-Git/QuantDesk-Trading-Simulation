@@ -1,0 +1,75 @@
+name: quantdesk
+
+services:
+  postgres:
+    image: postgres:18.7
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${QD_POSTGRES_ADMIN_PASSWORD:?Set local secret in .env}
+      POSTGRES_DB: postgres
+      QD_APP_DB_PASSWORD: ${QD_APP_DB_PASSWORD:?Set local secret in .env}
+      QD_KC_DB_PASSWORD: ${QD_KC_DB_PASSWORD:?Set local secret in .env}
+    ports:
+      - "127.0.0.1:${QD_PG_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    networks: [internal]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: ["start-dev", "--import-realm"]
+    restart: unless-stopped
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: qd_keycloak
+      KC_DB_PASSWORD: ${QD_KC_DB_PASSWORD:?Set local secret in .env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${QD_KC_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${QD_KC_ADMIN_PASSWORD:?Set local secret in .env}
+    ports:
+      - "127.0.0.1:${QD_KC_PORT:-8180}:8080"
+    volumes:
+      - ../keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  api:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+    ports:
+      - "127.0.0.1:5080:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__QuantDesk: "Host=postgres;Port=5432;Database=quantdesk;Username=qd_app;Password=${QD_APP_DB_PASSWORD:?}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  web:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: infra/docker/web.Dockerfile
+    ports:
+      - "127.0.0.1:8088:80"
+    depends_on: [api]
+    networks: [internal]
+
+networks:
+  internal: {}
+
+volumes:
+  postgres-data: {}

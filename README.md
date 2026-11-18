@@ -30,7 +30,7 @@ in `global.json`, `.node-version`, and `rust-toolchain.toml`.
 
 ## Important
 
-This commit is the *folder and configuration scaffold only*.
+The buildable project skeleton is initialized; no trading or financial functionality is implemented.
 It does not yet contain functional engines, API endpoints, React pages,
 Cargo crates, a runnable Compose stack, or completed QD tasks.
 Build and application projects should be initialized next, in reviewed PRs.
