@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csharp",
+    "ms-vscode.cpptools",
+    "ms-vscode.cmake-tools",
+    "rust-lang.rust-analyzer",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "ms-azuretools.vscode-docker"
+  ]
+}

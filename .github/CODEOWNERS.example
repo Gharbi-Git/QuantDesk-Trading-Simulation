@@ -1,0 +1,7 @@
+# TEMPLATE ONLY. Rename to CODEOWNERS once both GitHub usernames are confirmed.
+# /engines/quant-core/      @developer1-handle
+# /engines/backtest/        @developer1-handle
+# /services/strategy-runner/ @developer1-handle
+# /engines/exchange/        @developer2-handle
+# /infra/                   @developer2-handle
+# /contracts/               @developer1-handle @developer2-handle

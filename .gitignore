@@ -1,0 +1,57 @@
+# Environment and private credentials
+.env
+.env.*
+!.env.example
+*.pfx
+*.pem
+*.key
+*.secrets.json
+secrets.json
+
+# IDE and OS
+.vs/
+.idea/
+*.user
+*.suo
+*.rsuser
+.DS_Store
+Thumbs.db
+
+# .NET
+**/bin/
+**/obj/
+**/TestResults/
+
+# CMake / C++
+**/out/
+**/cmake-build-*/
+CMakeUserPresets.json
+**/CMakeUserPresets.json
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# Rust
+**/target/
+
+# Node / React
+**/node_modules/
+**/dist/
+**/.vite/
+**/coverage/
+
+# Python
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+*.py[cod]
+*.egg-info/
+
+# Infrastructure runtime data
+infra/**/data/
+infra/**/volumes/
+infra/compose/compose.override.yaml
