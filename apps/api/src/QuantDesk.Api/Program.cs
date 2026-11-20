@@ -9,6 +9,8 @@ using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using QuantDesk.Modules;
 using QuantDesk.Modules.Administration.Infrastructure.Services;
 using QuantDesk.Modules.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authorization;
+using QuantDesk.Api.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -49,7 +51,9 @@ var clientSecret = builder.Configuration["Keycloak:ClientSecret"]
 // -------------------------------------------------------
 // Authentication: Cookies + OpenID Connect
 // -------------------------------------------------------
-
+builder.Services.AddSingleton<
+    IAuthorizationHandler,
+    ResourceOwnerAuthorizationHandler>();
 builder.Services
     .AddAuthentication(options =>
     {
@@ -279,6 +283,10 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("AdminOnly", policy =>
         policy.RequireAuthenticatedUser()
               .RequireRole("ADMIN"));
+
+    options.AddPolicy("ResourceOwner", policy =>
+        policy.RequireAuthenticatedUser()
+              .AddRequirements(new ResourceOwnerRequirement()));
 });
 
 // -------------------------------------------------------
