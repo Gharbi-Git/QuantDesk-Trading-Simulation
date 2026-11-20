@@ -10,6 +10,8 @@ using QuantDesk.Modules;
 using QuantDesk.Modules.Administration.Infrastructure.Services;
 using QuantDesk.Modules.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authorization;
+using QuantDesk.Api.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -61,7 +63,9 @@ var clientSecret = builder.Configuration["Keycloak:ClientSecret"]
 // -------------------------------------------------------
 // Authentication: Cookies + OpenID Connect
 // -------------------------------------------------------
-
+builder.Services.AddSingleton<
+    IAuthorizationHandler,
+    ResourceOwnerAuthorizationHandler>();
 builder.Services
     .AddAuthentication(options =>
     {
@@ -291,6 +295,10 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("AdminOnly", policy =>
         policy.RequireAuthenticatedUser()
               .RequireRole("ADMIN"));
+
+    options.AddPolicy("ResourceOwner", policy =>
+        policy.RequireAuthenticatedUser()
+              .AddRequirements(new ResourceOwnerRequirement()));
 });
 
 // -------------------------------------------------------
@@ -351,7 +359,6 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
 .RequireAuthorization();
 
 // End the local session and initiate Keycloak logout.
-// TODO: Add antiforgery protection before frontend integration.
 // Issue a CSRF token to the authenticated frontend.
 app.MapGet("/api/auth/csrf",
     (HttpContext context, IAntiforgery antiforgery) =>
