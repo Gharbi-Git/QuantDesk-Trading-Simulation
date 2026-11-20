@@ -4,12 +4,31 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using QuantDesk.Modules;
+using QuantDesk.Modules.Administration.Infrastructure.Services;
+using QuantDesk.Modules.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();
+
+// -------------------------------------------------------
+// PostgreSQL / Entity Framework Core configuration
+// -------------------------------------------------------
+
+var connectionString =
+    builder.Configuration.GetConnectionString("QuantDesk")
+    ?? throw new InvalidOperationException(
+        "Missing ConnectionStrings:QuantDesk");
+
+builder.Services.AddDbContext<QuantDeskDbContext>(options =>
+{
+    options.UseNpgsql(connectionString);
+});
+
+builder.Services.AddScoped<UtilisateurProvisioningService>();
 
 // -------------------------------------------------------
 // Keycloak configuration
@@ -201,6 +220,50 @@ builder.Services
 
             return Task.CompletedTask;
         };
+
+        // ---------------------------------------------------
+        // Create or reuse the local QuantDesk user
+        // after successful Keycloak authentication
+        // ---------------------------------------------------
+
+        options.Events.OnTicketReceived = async context =>
+        {
+            if (context.Principal?.Identity is not ClaimsIdentity identity)
+            {
+                context.Fail("Authenticated identity is missing.");
+                return;
+            }
+
+            // Read the subject from the authenticated Keycloak identity.
+            var subject = context.Principal.FindFirst("sub")?.Value;
+
+            if (string.IsNullOrWhiteSpace(subject))
+            {
+                context.Fail("Keycloak subject is missing.");
+                return;
+            }
+
+            var username = context.Principal
+                .FindFirst("preferred_username")?.Value;
+
+            var email = context.Principal
+                .FindFirst("email")?.Value;
+
+            var provisioningService = context.HttpContext
+                .RequestServices
+                .GetRequiredService<UtilisateurProvisioningService>();
+
+            var utilisateurId = await provisioningService.ProvisionAsync(
+                subject,
+                username,
+                email,
+                context.HttpContext.RequestAborted);
+
+            // Store our INTERNAL QuantDesk user ID in the session.
+            identity.AddClaim(new Claim(
+                "quantdesk_user_id",
+                utilisateurId.ToString("D")));
+        };
     });
 
 // -------------------------------------------------------
@@ -267,6 +330,7 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
     {
         authenticated = true,
         subject = user.FindFirst("sub")?.Value,
+        quantDeskUserId = user.FindFirst("quantdesk_user_id")?.Value,
         username = user.Identity?.Name,
         email = user.FindFirst("email")?.Value
     });

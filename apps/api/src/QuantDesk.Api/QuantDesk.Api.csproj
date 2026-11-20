@@ -4,6 +4,10 @@
     <ProjectReference Include="..\QuantDesk.Modules\QuantDesk.Modules.csproj" />
     <ProjectReference Include="..\QuantDesk.Shared\QuantDesk.Shared.csproj"/>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+  <PrivateAssets>all</PrivateAssets>
+  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+</PackageReference>
   </ItemGroup>
 
   <PropertyGroup>
