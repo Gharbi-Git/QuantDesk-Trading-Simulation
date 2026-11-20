@@ -12,10 +12,18 @@ using QuantDesk.Modules.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using QuantDesk.Api.Authorization;
+using QuantDesk.Api.Realtime;
+using Microsoft.AspNetCore.SignalR;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<
+    IUserIdProvider,
+    QuantDeskUserIdProvider>();
+
+builder.Services.AddScoped<PlayerNotificationPublisher>();
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-CSRF-TOKEN";
@@ -59,6 +67,9 @@ var clientId = builder.Configuration["Keycloak:ClientId"]
 var clientSecret = builder.Configuration["Keycloak:ClientSecret"]
     ?? throw new InvalidOperationException(
         "Missing Keycloak:ClientSecret");
+// Server-controlled destination after login/logout.
+var frontendReturnUrl =
+    builder.Configuration["Frontend:ReturnUrl"] ?? "/api/me";
 
 // -------------------------------------------------------
 // Authentication: Cookies + OpenID Connect
@@ -150,6 +161,12 @@ builder.Services
 
         // Keep OIDC tokens out of the browser session cookie.
         options.SaveTokens = false;
+        // Keycloak needs the client ID when no ID token hint is stored.
+options.Events.OnRedirectToIdentityProviderForSignOut = context =>
+{
+    context.ProtocolMessage.ClientId = clientId;
+    return Task.CompletedTask;
+};
 
         // ---------------------------------------------------
         // Map Keycloak realm roles into ASP.NET role claims
@@ -336,7 +353,7 @@ app.MapGet("/auth/login", () =>
     Results.Challenge(
         new AuthenticationProperties
         {
-            RedirectUri = "/api/me"
+           RedirectUri = frontendReturnUrl
         },
         new[]
         {
@@ -391,7 +408,7 @@ app.MapPost("/auth/logout",
         return Results.SignOut(
             new AuthenticationProperties
             {
-                RedirectUri = "/health"
+                RedirectUri = frontendReturnUrl
             },
             new[]
             {
@@ -420,7 +437,12 @@ app.MapGet("/api/admin/test", () =>
         message = "ADMIN access granted"
     }))
     .RequireAuthorization("AdminOnly");
+// Server-controlled return destination after login/logout.
+// For local Vite development, set Frontend__ReturnUrl.
 
+
+app.MapHub<PlayerHub>("/hubs/player")
+   .RequireAuthorization("PlayerOnly");
 // -------------------------------------------------------
 // Start application
 // -------------------------------------------------------
