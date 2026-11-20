@@ -9,12 +9,24 @@ using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using QuantDesk.Modules;
 using QuantDesk.Modules.Administration.Infrastructure.Services;
 using QuantDesk.Modules.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using QuantDesk.Api.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+
+    options.Cookie.SecurePolicy =
+        builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
+});
 
 // -------------------------------------------------------
 // PostgreSQL / Entity Framework Core configuration
@@ -299,6 +311,7 @@ app.UseExceptionHandler();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseAntiforgery();
 
 // -------------------------------------------------------
 // Existing QuantDesk bootstrap endpoints
@@ -346,21 +359,47 @@ app.MapGet("/api/me", (ClaimsPrincipal user) =>
 .RequireAuthorization();
 
 // End the local session and initiate Keycloak logout.
-// TODO: Add antiforgery protection before frontend integration.
-app.MapPost("/auth/logout", () =>
-    Results.SignOut(
-        new AuthenticationProperties
+// Issue a CSRF token to the authenticated frontend.
+app.MapGet("/api/auth/csrf",
+    (HttpContext context, IAntiforgery antiforgery) =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+
+        var tokens = antiforgery.GetAndStoreTokens(context);
+
+        return Results.Ok(new
         {
-            RedirectUri = "/health"
-        },
-        new[]
+            csrfToken = tokens.RequestToken
+        });
+    })
+    .RequireAuthorization();
+
+
+// End the local session and initiate Keycloak logout.
+// Require a valid CSRF token before signing out.
+app.MapPost("/auth/logout",
+    async (HttpContext context, IAntiforgery antiforgery) =>
+    {
+        if (!await antiforgery.IsRequestValidAsync(context))
         {
-            CookieAuthenticationDefaults.AuthenticationScheme,
-            OpenIdConnectDefaults.AuthenticationScheme
+            return Results.BadRequest(new
+            {
+                error = "Invalid or missing CSRF token."
+            });
         }
-    )
-)
-.RequireAuthorization();
+
+        return Results.SignOut(
+            new AuthenticationProperties
+            {
+                RedirectUri = "/health"
+            },
+            new[]
+            {
+                CookieAuthenticationDefaults.AuthenticationScheme,
+                OpenIdConnectDefaults.AuthenticationScheme
+            });
+    })
+    .RequireAuthorization();
 
 // -------------------------------------------------------
 // Temporary authorization test endpoints
