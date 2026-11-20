@@ -1,0 +1,55 @@
+{
+    "realm":  "quantdesk",
+    "enabled":  true,
+    "displayName":  "QuantDesk Development",
+    "roles":  {
+                  "realm":  [
+                                {
+                                    "name":  "PLAYER"
+                                },
+                                {
+                                    "name":  "ADMIN"
+                                }
+                            ]
+              },
+    "clients":  [
+                    {
+                        "webOrigins":  [
+                                           "http://127.0.0.1:5080"
+                                       ],
+                        "protocolMappers":  [
+                                                {
+                                                    "protocolMapper":  "oidc-usermodel-realm-role-mapper",
+                                                    "protocol":  "openid-connect",
+                                                    "name":  "qd_roles",
+                                                    "consentRequired":  false,
+                                                    "config":  {
+                                                                   "userinfo.token.claim":  "true",
+                                                                   "access.token.claim":  "true",
+                                                                   "claim.name":  "qd_roles",
+                                                                   "jsonType.label":  "String",
+                                                                   "multivalued":  "true",
+                                                                   "id.token.claim":  "true",
+                                                                   "usermodel.realmRoleMapping.rolePrefix":  ""
+                                                               }
+                                                }
+                                            ],
+                        "serviceAccountsEnabled":  false,
+                        "clientAuthenticatorType":  "client-secret",
+                        "name":  "QuantDesk Backend for Frontend",
+                        "implicitFlowEnabled":  false,
+                        "redirectUris":  [
+                                             "http://127.0.0.1:5080/signin-oidc"
+                                         ],
+                        "publicClient":  false,
+                        "clientId":  "quantdesk-bff",
+                        "enabled":  true,
+                        "attributes":  {
+                                           "post.logout.redirect.uris":  "http://127.0.0.1:5080/signout-callback-oidc"
+                                       },
+                        "protocol":  "openid-connect",
+                        "standardFlowEnabled":  true,
+                        "directAccessGrantsEnabled":  false
+                    }
+                ]
+}
