@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Authorization;
 using QuantDesk.Api.Authorization;
 using QuantDesk.Api.Realtime;
 using Microsoft.AspNetCore.SignalR;
+using QuantDesk.Modules.Portfolio.Domain.Entities;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -443,6 +444,155 @@ app.MapGet("/api/admin/test", () =>
 
 app.MapHub<PlayerHub>("/hubs/player")
    .RequireAuthorization("PlayerOnly");
+
+
+//
+// Personal trading accounts (virtual funds only)
+//
+
+// Create an account for the authenticated player.
+app.MapPost("/api/accounts/personal",
+    async (
+        HttpContext context,
+        IAntiforgery antiforgery,
+        QuantDeskDbContext db,
+        CancellationToken ct) =>
+    {
+        if (!await antiforgery.IsRequestValidAsync(context))
+        {
+            return Results.BadRequest(new
+            {
+                error = "Invalid or missing CSRF token."
+            });
+        }
+
+        var claim = context.User
+            .FindFirst("quantdesk_user_id")?.Value;
+
+        if (!Guid.TryParse(claim, out var userId))
+            return Results.Unauthorized();
+
+        // One personal account per player.
+        var existing = await db.ComptesTrading
+            .AsNoTracking()
+            .FirstOrDefaultAsync(a =>
+                a.OwnerUserId == userId &&
+                a.AccountType == "Personal", ct);
+
+        if (existing is not null)
+        {
+            return Results.Ok(new
+            {
+                existing.Id,
+                existing.AccountType,
+                existing.Currency,
+                existing.CashBalance
+            });
+        }
+
+        // The server controls the initial virtual funding.
+        const decimal startingCash = 100_000m;
+
+        var account = CompteTrading.OpenPersonal(
+            userId,
+            startingCash);
+
+        db.ComptesTrading.Add(account);
+
+        try
+        {
+            // Account, portfolio and initial journal entry
+            // are saved in the same transaction.
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (
+            ex.InnerException is Npgsql.PostgresException pg &&
+            pg.SqlState == Npgsql.PostgresErrorCodes.UniqueViolation)
+        {
+            return Results.Conflict(new
+            {
+                error = "The personal account already exists."
+            });
+        }
+
+        return Results.Created(
+            $"/api/accounts/{account.Id}",
+            new
+            {
+                account.Id,
+                account.AccountType,
+                account.Currency,
+                account.CashBalance
+            });
+    })
+    .RequireAuthorization("PlayerOnly");
+
+
+// List only accounts belonging to the signed-in player.
+app.MapGet("/api/accounts",
+    async (
+        ClaimsPrincipal user,
+        QuantDeskDbContext db,
+        CancellationToken ct) =>
+    {
+        var claim = user.FindFirst("quantdesk_user_id")?.Value;
+
+        if (!Guid.TryParse(claim, out var userId))
+            return Results.Unauthorized();
+
+        var accounts = await db.ComptesTrading
+            .AsNoTracking()
+            .Where(a => a.OwnerUserId == userId)
+            .Select(a => new
+            {
+                a.Id,
+                a.AccountType,
+                a.Currency,
+                a.CashBalance,
+                a.CreatedAtUtc
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(accounts);
+    })
+    .RequireAuthorization("PlayerOnly");
+
+
+// Read an account only if the player owns it.
+app.MapGet("/api/accounts/{id:guid}",
+    async (
+        Guid id,
+        ClaimsPrincipal user,
+        QuantDeskDbContext db,
+        CancellationToken ct) =>
+    {
+        var claim = user.FindFirst("quantdesk_user_id")?.Value;
+
+        if (!Guid.TryParse(claim, out var userId))
+            return Results.Unauthorized();
+
+        var account = await db.ComptesTrading
+            .AsNoTracking()
+            .Where(a =>
+                a.Id == id &&
+                a.OwnerUserId == userId)
+            .Select(a => new
+            {
+                a.Id,
+                a.AccountType,
+                a.Currency,
+                a.CashBalance,
+                a.CreatedAtUtc
+            })
+            .FirstOrDefaultAsync(ct);
+
+        // Don't reveal whether another player's account exists.
+        return account is null
+            ? Results.NotFound()
+            : Results.Ok(account);
+    })
+    .RequireAuthorization("PlayerOnly");
+
 // -------------------------------------------------------
 // Start application
 // -------------------------------------------------------

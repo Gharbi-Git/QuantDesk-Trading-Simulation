@@ -1,7 +1,7 @@
-
 import { useEffect, useState } from 'react'
-import { productName } from './config'
 import { HubConnectionBuilder } from '@microsoft/signalr'
+import { productName } from './config'
+
 type Module = {
   code: string
   name: string
@@ -15,35 +15,83 @@ type User = {
   quantDeskUserId: string | null
 }
 
-type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
-type View = 'overview' | 'modules'
+type TradingAccount = {
+  id: string
+  accountType: string
+  currency: string
+  cashBalance: number
+  createdAtUtc?: string
+}
 
-const workspaces = [
-  { name: 'Market Data', description: 'Equities and market information' },
-  { name: 'Strategy Registry', description: 'Trading strategies and versions' },
-  { name: 'Paper Trading', description: 'Virtual trading and executions' },
-  { name: 'Portfolio', description: 'Positions, balances, and performance' },
-  { name: 'Arena', description: 'Trading challenges and matches' },
-  { name: 'Administration', description: 'Platform administration tools' },
+type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
+type AccountStatus = 'idle' | 'loading' | 'ready' | 'error'
+type View = 'overview' | 'portfolio' | 'profile' | 'modules'
+type LiveStatus = 'Offline' | 'Connecting' | 'Connected' | 'Reconnecting' | 'Connection failed'
+
+const navigation: { id: View; label: string; symbol: string }[] = [
+  { id: 'overview', label: 'Overview', symbol: '◫' },
+  { id: 'portfolio', label: 'My portfolio', symbol: '▤' },
+  { id: 'profile', label: 'My profile', symbol: '◉' },
+  { id: 'modules', label: 'Modules', symbol: '▦' },
 ]
 
+const workspaces = [
+  { name: 'Market Data', description: 'Equities, quotes, and historical prices' },
+  { name: 'Strategy Registry', description: 'Strategy versions and deployments' },
+  { name: 'Paper Trading', description: 'Virtual orders and execution workflows' },
+  { name: 'Portfolio', description: 'Accounts, positions, and balances' },
+  { name: 'Arena', description: 'Simulation sessions and challenges' },
+  { name: 'Administration', description: 'Authorized platform management' },
+]
+
+function formatMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount)
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`
+  }
+}
+
+function formatDate(value?: string): string {
+  if (!value) return 'Not available'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleDateString()
+}
+
 export function App() {
+  const [view, setView] = useState<View>('overview')
+  const [refreshKey, setRefreshKey] = useState(0)
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('loading')
   const [user, setUser] = useState<User | null>(null)
-  const [modules, setModules] = useState<Module[]>([])
-  const [modulesError, setModulesError] = useState('')
   const [sessionError, setSessionError] = useState('')
   const [actionError, setActionError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
-  const [view, setView] = useState<View>('overview')
-  const [refreshKey, setRefreshKey] = useState(0)  
-  const [liveStatus, setLiveStatus] = useState('Offline')
+
+  const [modules, setModules] = useState<Module[]>([])
+  const [modulesError, setModulesError] = useState('')
+  const [modulesLoading, setModulesLoading] = useState(true)
+
+  const [accounts, setAccounts] = useState<TradingAccount[]>([])
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>('idle')
+  const [accountError, setAccountError] = useState('')
+  const [accountMessage, setAccountMessage] = useState('')
+  const [creatingAccount, setCreatingAccount] = useState(false)
+  const [accountsRevision, setAccountsRevision] = useState(0)
+
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('Offline')
   const [latestNotification, setLatestNotification] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
+    setSessionStatus('loading')
+    setSessionError('')
 
-    fetch('/api/me', {
+    void fetch('/api/me', {
       credentials: 'same-origin',
       signal: controller.signal,
     })
@@ -55,145 +103,194 @@ export function App() {
           }
           return
         }
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const identity = (await response.json()) as User
-
+        if (!identity.authenticated || !identity.quantDeskUserId) {
+          throw new Error('The authenticated identity is incomplete.')
+        }
         if (!controller.signal.aborted) {
           setUser(identity)
           setSessionStatus('authenticated')
         }
       })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        setSessionError(String(error))
-        setSessionStatus('error')
-      })
-
-    fetch('/api/meta/modules', {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-
-        return (await response.json()) as Module[]
-      })
-      .then((items) => {
         if (!controller.signal.aborted) {
-          setModules(items)
-          setModulesError('')
-        }
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setModulesError(String(error))
+          setUser(null)
+          setSessionError(String(error))
+          setSessionStatus('error')
         }
       })
 
     return () => controller.abort()
   }, [refreshKey])
-  
-  
-useEffect(() => {
-  if (sessionStatus !== 'authenticated') {
-    setLiveStatus('Offline')
-    return
-  }
 
-  let active = true
+  useEffect(() => {
+    const controller = new AbortController()
+    setModulesLoading(true)
+    setModulesError('')
 
-  const connection = new HubConnectionBuilder()
-    .withUrl('/hubs/player', { withCredentials: true })
-    .withAutomaticReconnect()
-    .build()
+    void fetch('/api/meta/modules', { credentials: 'same-origin', signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return (await response.json()) as Module[]
+      })
+      .then((items) => {
+        if (!controller.signal.aborted) setModules(items)
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setModulesError(String(error))
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setModulesLoading(false)
+      })
 
-  connection.on('PlayerNotification', (message: string) => {
-    if (active) setLatestNotification(message)
-  })
+    return () => controller.abort()
+  }, [refreshKey])
 
-  connection.onreconnecting(() => {
-    if (active) setLiveStatus('Reconnecting')
-  })
+  useEffect(() => {
+    if (sessionStatus !== 'authenticated' || !user?.quantDeskUserId) {
+      setAccounts([])
+      setAccountStatus('idle')
+      return
+    }
 
-  connection.onreconnected(() => {
-    if (active) setLiveStatus('Connected')
-  })
+    const controller = new AbortController()
+    setAccountStatus('loading')
+    setAccountError('')
 
-  connection.onclose(() => {
-    if (active) setLiveStatus('Offline')
-  })
+    void fetch('/api/accounts', { credentials: 'same-origin', signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data: unknown = await response.json()
+        if (!Array.isArray(data)) throw new Error('Invalid accounts response')
+        return data as TradingAccount[]
+      })
+      .then((items) => {
+        if (!controller.signal.aborted) {
+          setAccounts(items)
+          setAccountStatus('ready')
+        }
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setAccountError(String(error))
+          setAccountStatus('error')
+        }
+      })
 
-  setLiveStatus('Connecting')
+    return () => controller.abort()
+  }, [sessionStatus, user?.quantDeskUserId, refreshKey, accountsRevision])
 
-  void connection.start()
-    .then(async () => {
-      if (!active) {
-        await connection.stop()
-        return
-      }
+  useEffect(() => {
+    if (sessionStatus !== 'authenticated') {
+      setLiveStatus('Offline')
+      setLatestNotification(null)
+      return
+    }
 
-      const reply = await connection.invoke<string>('Ping')
+    let active = true
+    const connection = new HubConnectionBuilder()
+      .withUrl('/hubs/player', { withCredentials: true })
+      .withAutomaticReconnect()
+      .build()
 
+    connection.on('PlayerNotification', (message: string) => {
       if (active) {
-        setLiveStatus(reply === 'pong' ? 'Connected' : 'Unexpected response')
+        setLatestNotification(message)
+        setAccountsRevision((value) => value + 1)
       }
     })
-    .catch((error: unknown) => {
+    connection.onreconnecting(() => {
+      if (active) setLiveStatus('Reconnecting')
+    })
+    connection.onreconnected(() => {
       if (active) {
-        console.error('SignalR connection failed:', error)
-        setLiveStatus('Connection failed')
+        setLiveStatus('Connected')
+        // Refresh server state: messages may have been missed while offline.
+        setAccountsRevision((value) => value + 1)
       }
     })
+    connection.onclose(() => {
+      if (active) setLiveStatus('Offline')
+    })
 
-  return () => {
-    active = false
-    void connection.stop().catch(() => {})
-  }
-}, [sessionStatus])
+    setLiveStatus('Connecting')
+    void connection.start()
+      .then(async () => {
+        if (!active) {
+          await connection.stop()
+          return
+        }
+        const reply = await connection.invoke<string>('Ping')
+        if (active) setLiveStatus(reply === 'pong' ? 'Connected' : 'Connection failed')
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          console.error('SignalR connection failed:', error)
+          setLiveStatus('Connection failed')
+        }
+      })
 
+    return () => {
+      active = false
+      void connection.stop().catch(() => {})
+    }
+  }, [sessionStatus, user?.quantDeskUserId])
 
   function refresh() {
-    setSessionStatus('loading')
-    setSessionError('')
-    setModulesError('')
-    setRefreshKey((current) => current + 1)
+    setActionError('')
+    setAccountMessage('')
+    setRefreshKey((value) => value + 1)
+  }
+
+  async function createPersonalAccount() {
+    if (sessionStatus !== 'authenticated' || creatingAccount) return
+    setCreatingAccount(true)
+    setActionError('')
+    setAccountMessage('')
+    try {
+      const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'same-origin' })
+      if (!csrfResponse.ok) throw new Error(`CSRF request failed: HTTP ${csrfResponse.status}`)
+      const csrfData = (await csrfResponse.json()) as { csrfToken?: string }
+      if (!csrfData.csrfToken) throw new Error('Missing CSRF token')
+
+      const response = await fetch('/api/accounts/personal', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'X-CSRF-TOKEN': csrfData.csrfToken },
+      })
+      if (!response.ok) throw new Error(`Account creation failed: HTTP ${response.status}`)
+
+      setAccountMessage(response.status === 201
+        ? 'Your virtual personal account was created successfully.'
+        : 'Your personal account is ready.')
+      setAccountsRevision((value) => value + 1)
+    } catch (error: unknown) {
+      setActionError(String(error))
+    } finally {
+      setCreatingAccount(false)
+    }
   }
 
   async function logout() {
-    setActionError('')
     setSigningOut(true)
-
+    setActionError('')
     try {
-      const response = await fetch('/api/auth/csrf', {
-        credentials: 'same-origin',
-      })
+      const response = await fetch('/api/auth/csrf', { credentials: 'same-origin' })
+      if (!response.ok) throw new Error(`CSRF request failed: HTTP ${response.status}`)
+      const data = (await response.json()) as { csrfToken?: string }
+      if (!data.csrfToken) throw new Error('CSRF token is missing')
 
-      if (!response.ok) {
-        throw new Error(`Cannot get CSRF token: HTTP ${response.status}`)
-      }
-
-      const data = (await response.json()) as { csrfToken: string }
-
-      if (!data.csrfToken) {
-        throw new Error('CSRF token is missing')
-      }
-
+      // A real form navigation allows the OIDC logout redirect to complete.
       const form = document.createElement('form')
       form.method = 'POST'
       form.action = '/auth/logout'
-      form.style.display = 'none'
-
-      const field = document.createElement('input')
-      field.type = 'hidden'
-      field.name = '__RequestVerificationToken'
-      field.value = data.csrfToken
-
-      form.appendChild(field)
+      form.hidden = true
+      const token = document.createElement('input')
+      token.type = 'hidden'
+      token.name = '__RequestVerificationToken'
+      token.value = data.csrfToken
+      form.appendChild(token)
       document.body.appendChild(form)
       form.submit()
     } catch (error: unknown) {
@@ -202,43 +299,65 @@ useEffect(() => {
     }
   }
 
+  const personalAccount = accounts.find((account) => account.accountType === 'Personal') ?? null
+  const isAuthenticated = sessionStatus === 'authenticated'
+  const accountPanel = (
+    <section className="identity-panel" aria-label="Personal trading account">
+      <div>
+        <span className="eyebrow">VIRTUAL TRADING</span>
+        <h2>Personal trading account</h2>
+        <p>Balances are loaded from QuantDesk's PostgreSQL-backed API, not sample values.</p>
+        {accountMessage && <p role="status">{accountMessage}</p>}
+      </div>
+      <div className="identity-details">
+        {!isAuthenticated ? (
+          <p>Sign in to view or create your virtual trading account.</p>
+        ) : accountStatus === 'loading' ? (
+          <p role="status">Loading your account...</p>
+        ) : accountStatus === 'error' ? (
+          <div className="alert alert-error" role="alert">Unable to load account: {accountError}</div>
+        ) : personalAccount ? (
+          <>
+            <div><span>Cash balance</span><strong>{formatMoney(personalAccount.cashBalance, personalAccount.currency)}</strong></div>
+            <div><span>Account type</span><strong>{personalAccount.accountType}</strong></div>
+            <div><span>Currency</span><strong>{personalAccount.currency}</strong></div>
+            <div><span>Created</span><strong>{formatDate(personalAccount.createdAtUtc)}</strong></div>
+            <div><span>Account ID</span><code>{personalAccount.id}</code></div>
+          </>
+        ) : (
+          <>
+            <p>You don't have a personal trading account yet.</p>
+            <button type="button" className="button button-primary"
+              onClick={() => void createPersonalAccount()} disabled={creatingAccount}>
+              {creatingAccount ? 'Creating account...' : 'Create virtual trading account'}
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  )
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">Q</div>
-          <div>
-            <strong>{productName}</strong>
-            <small>Trading Simulation</small>
-          </div>
+          <div><strong>{productName}</strong><small>Trading Simulation</small></div>
         </div>
-
         <div className="sidebar-section-label">WORKSPACE</div>
-
         <nav className="navigation" aria-label="Main navigation">
-          <button
-            className={view === 'overview' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('overview')}
-            type="button"
-          >
-            <span>◫</span> Overview
-          </button>
-
-          <button
-            className={view === 'modules' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('modules')}
-            type="button"
-          >
-            <span>▦</span> Modules
-          </button>
+          {navigation.map((item) => (
+            <button key={item.id} type="button"
+              className={view === item.id ? 'nav-item active' : 'nav-item'}
+              aria-current={view === item.id ? 'page' : undefined}
+              onClick={() => setView(item.id)}>
+              <span aria-hidden="true">{item.symbol}</span>{item.label}
+            </button>
+          ))}
         </nav>
-
         <div className="sidebar-bottom">
-          <div className="environment-label">
-            <span className="status-dot" />
-            Development environment
-          </div>
-          <small>Virtual funds only</small>
+          <div className="environment-label"><span className="status-dot" />Development environment</div>
+          <small>Virtual funds only · No live trading</small>
         </div>
       </aside>
 
@@ -246,169 +365,109 @@ useEffect(() => {
         <header className="topbar">
           <div>
             <span className="eyebrow">QUANTDESK PLATFORM</span>
-            <h1>{view === 'overview' ? 'Overview' : 'Modules'}</h1>
+            <h1>{navigation.find((item) => item.id === view)?.label}</h1>
           </div>
-
           <div className="topbar-actions">
-            <button
-              type="button"
-              className="button button-secondary"
-              onClick={refresh}
-            >
-              Refresh
-            </button>
-
-            {sessionStatus === 'authenticated' ? (
+            <button type="button" className="button button-secondary" onClick={refresh}>Refresh</button>
+            {isAuthenticated ? (
               <div className="user-menu">
-                <div className="avatar">
-                  {(user?.username || 'U').charAt(0).toUpperCase()}
-                </div>
-
-                <div className="user-details">
-                  <strong>{user?.username || 'Player'}</strong>
-                  <small>Signed in</small>
-                </div>
-
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => void logout()}
-                  disabled={signingOut}
-                >
+                <div className="avatar" aria-hidden="true">{(user?.username || 'U')[0].toUpperCase()}</div>
+                <div className="user-details"><strong>{user?.username || 'Player'}</strong><small>Signed in</small></div>
+                <button type="button" className="button button-secondary"
+                  onClick={() => void logout()} disabled={signingOut}>
                   {signingOut ? 'Signing out...' : 'Sign out'}
                 </button>
               </div>
+            ) : sessionStatus === 'loading' ? (
+              <span className="muted">Checking session...</span>
             ) : (
-              <a className="button button-primary" href="/auth/login">
-                Sign in
-              </a>
+              <a className="button button-primary" href="/auth/login">Sign in</a>
             )}
           </div>
         </header>
 
         <main className="content">
-          {actionError && (
-            <div className="alert alert-error" role="alert">{actionError}</div>
-          )}
-
+          {actionError && <div className="alert alert-error" role="alert">{actionError}</div>}
           {sessionStatus === 'error' && (
-            <div className="alert alert-error" role="alert">
-              Unable to reach the authentication API. {sessionError}
-            </div>
+            <div className="alert alert-error" role="alert">Authentication API unavailable: {sessionError}</div>
           )}
-
-          {sessionStatus === 'loading' && (
-            <div className="alert" role="status">
-              Checking your QuantDesk session...
-            </div>
-          )}
-
+          {sessionStatus === 'loading' && <div className="alert" role="status">Checking your session...</div>}
           {sessionStatus === 'anonymous' && (
-            <div className="alert">
-              You're browsing as a guest. Sign in to access your player session.
-            </div>
+            <div className="alert">You're browsing as a guest. Sign in to use your personal account.</div>
           )}
 
-          {view === 'overview' ? (
+          {view === 'overview' && (
             <>
               <section className="welcome-card">
                 <div>
                   <span className="eyebrow">TRADING SIMULATION WORKSPACE</span>
-                  <h2>
-                    {sessionStatus === 'authenticated'
-                      ? `Welcome back, ${user?.username || 'Player'}`
-                      : 'Welcome to QuantDesk'}
-                  </h2>
-                  <p>
-                    Explore platform modules and manage your simulation workspace.
-                    Trading features will become available as their modules are implemented.
-                  </p>
-                  <button
-                    type="button"
-                    className="button button-primary"
-                    onClick={() => setView('modules')}
-                  >
-                    Explore modules
-                  </button>
+                  <h2>{isAuthenticated ? `Welcome back, ${user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
+                  <p>Manage your virtual trading account and follow the platform's modules as they become available.</p>
+                  <button type="button" className="button button-primary"
+                    onClick={() => setView('portfolio')}>View my portfolio</button>
                 </div>
                 <div className="welcome-symbol" aria-hidden="true">Q</div>
               </section>
-
-              <div className="section-heading">
-                <div>
-                  <span className="eyebrow">YOUR PLATFORM</span>
-                  <h2>Workspace modules</h2>
-                </div>
-                <span className="muted">Development roadmap</span>
-              </div>
-
+              {accountPanel}
+              <div className="section-heading"><div><span className="eyebrow">PLATFORM</span><h2>Explore QuantDesk</h2></div><span className="muted">Module roadmap</span></div>
               <div className="workspace-grid">
                 {workspaces.map((workspace) => (
                   <article className="workspace-card" key={workspace.name}>
-                    <span className="planned-label">PLANNED</span>
-                    <h3>{workspace.name}</h3>
-                    <p>{workspace.description}</p>
+                    <span className="planned-label">IN DEVELOPMENT</span>
+                    <h3>{workspace.name}</h3><p>{workspace.description}</p>
                   </article>
                 ))}
               </div>
+            </>
+          )}
 
-              <section className="identity-panel">
-                <div>
-                  <span className="eyebrow">AUTHENTICATION</span>
-                  <h2>Player session</h2>
-                  <p>
-                    Your session information comes directly from the QuantDesk API.
-                  </p>
-                </div>
-
-                <div className="identity-details">
-                  <div>
-                    <span>Status</span>
-                    <strong>{sessionStatus}</strong>
-                  </div>
-                  <div>
-                    <span>Username</span>
-                    <strong>{user?.username || 'Not signed in'}</strong>
-                  </div>
-                  <div>
-                    <span>Internal user ID</span>
-                    <code>{user?.quantDeskUserId || '—'}</code>
-                  </div>
-                  <div>
-  <span>Real-time connection</span>
-  <strong>{liveStatus}</strong>
-</div>
-
-{latestNotification && (
-  <div>
-    <span>Latest notification</span>
-    <strong>{latestNotification}</strong>
-  </div>
-)}
-                </div>
+          {view === 'portfolio' && (
+            <>
+              {accountPanel}
+              <section className="modules-panel" style={{ marginTop: 24 }}>
+                <div className="section-heading"><div><span className="eyebrow">ACCOUNTING</span><h2>Positions & performance</h2></div></div>
+                <p className="muted">Positions, order history, reserved cash and P&L will appear when the trading engine and portfolio APIs are implemented. No estimated or simulated performance is shown here.</p>
               </section>
             </>
-          ) : (
+          )}
+
+          {view === 'profile' && (
+            <>
+              <section className="identity-panel">
+                <div>
+                  <span className="eyebrow">PLAYER PROFILE</span>
+                  <h2>{user?.username || 'Your QuantDesk identity'}</h2>
+                  <p>Your profile is derived from the authenticated Keycloak session. The account balance remains server-controlled.</p>
+                  {!isAuthenticated && <a className="button button-primary" href="/auth/login">Sign in to view profile</a>}
+                </div>
+                <div className="identity-details">
+                  <div><span>Session</span><strong>{sessionStatus}</strong></div>
+                  <div><span>Username</span><strong>{user?.username || 'Not signed in'}</strong></div>
+                  <div><span>Email</span><strong>{user?.email || 'Not provided'}</strong></div>
+                  <div><span>Internal user ID</span><code>{user?.quantDeskUserId || '—'}</code></div>
+                  <div><span>Real-time connection</span><strong>{liveStatus}</strong></div>
+                </div>
+              </section>
+              {latestNotification && isAuthenticated && (
+                <section className="identity-panel" aria-label="Most recent notification">
+                  <div><span className="eyebrow">NOTIFICATIONS</span><h2>Latest update</h2></div>
+                  <div className="identity-details"><p role="status">{latestNotification}</p></div>
+                </section>
+              )}
+              {isAuthenticated && accountPanel}
+            </>
+          )}
+
+          {view === 'modules' && (
             <section className="modules-panel">
               <div className="section-heading">
-                <div>
-                  <span className="eyebrow">PLATFORM REGISTRY</span>
-                  <h2>Registered modules</h2>
-                </div>
+                <div><span className="eyebrow">PLATFORM REGISTRY</span><h2>Registered modules</h2></div>
                 <span className="muted">{modules.length} modules</span>
               </div>
-
-              <p className="muted">
-                This list is loaded from the backend module catalogue.
-                Registration does not mean that trading functionality is complete.
-              </p>
-
-              {modulesError && (
-                <div className="alert alert-error" role="alert">
-                  Failed to load modules: {modulesError}
-                </div>
-              )}
-
+              <p className="muted">This registry is loaded from the API. Registration does not imply that a module is ready for trading.</p>
+              {modulesLoading && <p role="status">Loading modules...</p>}
+              {modulesError && <div className="alert alert-error" role="alert">{modulesError}</div>}
+              {!modulesLoading && !modulesError && modules.length === 0 && <p>No registered modules yet.</p>}
               <div className="module-list">
                 {modules.map((module) => (
                   <div className="module-row" key={module.code}>
