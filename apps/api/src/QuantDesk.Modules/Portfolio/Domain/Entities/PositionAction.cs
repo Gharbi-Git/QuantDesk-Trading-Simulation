@@ -12,6 +12,7 @@ public sealed class PositionAction
     // Stored values; EF Core can rehydrate them through the private constructor/setters.
     public Guid Id { get; private set; } = Guid.NewGuid();
     public Guid CompteTradingId { get; private set; }
+    public Portefeuille Portefeuille { get; private set; } = null!;
     public string InstrumentId { get; private set; } = string.Empty;
     public long Quantity { get; private set; }
     public decimal CostBasis { get; private set; }

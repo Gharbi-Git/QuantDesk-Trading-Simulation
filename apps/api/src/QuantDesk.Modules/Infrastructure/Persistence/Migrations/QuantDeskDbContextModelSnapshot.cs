@@ -142,6 +142,52 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.ToTable("portefeuilles", (string)null);
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.PositionAction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompteTradingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("compte_trading_id");
+
+                    b.Property<decimal>("CostBasis")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("numeric(28,8)")
+                        .HasColumnName("cost_basis");
+
+                    b.Property<string>("InstrumentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("instrument_id");
+
+                    b.Property<long>("Quantity")
+                        .HasColumnType("bigint")
+                        .HasColumnName("quantity");
+
+                    b.Property<decimal>("RealizedPnl")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("numeric(28,8)")
+                        .HasColumnName("realized_pnl");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompteTradingId", "InstrumentId")
+                        .IsUnique();
+
+                    b.ToTable("positions_action", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_positions_action_cost_basis_nonnegative", "cost_basis >= 0");
+
+                            t.HasCheckConstraint("ck_positions_action_quantity_basis_consistent", "(quantity = 0 AND cost_basis = 0) OR (quantity > 0 AND cost_basis > 0)");
+
+                            t.HasCheckConstraint("ck_positions_action_quantity_nonnegative", "quantity >= 0");
+                        });
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CashJournalEntry", b =>
                 {
                     b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", "CompteTrading")
@@ -173,12 +219,28 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.Navigation("CompteTrading");
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.PositionAction", b =>
+                {
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", "Portefeuille")
+                        .WithMany("Positions")
+                        .HasForeignKey("CompteTradingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Portefeuille");
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", b =>
                 {
                     b.Navigation("Journal");
 
                     b.Navigation("Portefeuille")
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", b =>
+                {
+                    b.Navigation("Positions");
                 });
 #pragma warning restore 612, 618
         }

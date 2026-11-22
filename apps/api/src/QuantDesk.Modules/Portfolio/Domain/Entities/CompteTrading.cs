@@ -1,4 +1,3 @@
-
 namespace QuantDesk.Modules.Portfolio.Domain.Entities;
 
 public sealed class CompteTrading
@@ -57,6 +56,8 @@ public sealed class Portefeuille
     public Guid CompteTradingId { get; private set; }
 
     public CompteTrading CompteTrading { get; private set; } = null!;
+
+    public List<PositionAction> Positions { get; private set; } = new();
 
     private Portefeuille() { }
 

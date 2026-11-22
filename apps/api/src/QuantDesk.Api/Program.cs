@@ -593,6 +593,83 @@ app.MapGet("/api/accounts/{id:guid}",
     })
     .RequireAuthorization("PlayerOnly");
 
+// QD-056: Read holdings only if this session owns the account.
+// No arbitrary Buy/Sell API: future M06 settlement will create/update positions.
+app.MapGet("/api/accounts/{id:guid}/positions",
+    async (
+        Guid id,
+        ClaimsPrincipal user,
+        QuantDeskDbContext db,
+        CancellationToken ct) =>
+    {
+        if (!Guid.TryParse(user.FindFirst("quantdesk_user_id")?.Value,
+                out var userId))
+            return Results.Unauthorized();
+
+        var ownsAccount = await db.ComptesTrading
+            .AsNoTracking()
+            .AnyAsync(a => a.Id == id && a.OwnerUserId == userId, ct);
+
+        if (!ownsAccount)
+            return Results.NotFound();
+
+        // Query is explicitly account-scoped even after ownership was checked.
+        var positions = await db.PositionsAction
+            .AsNoTracking()
+            .Where(p => p.CompteTradingId == id)
+            .OrderBy(p => p.InstrumentId)
+            .ToListAsync(ct);
+
+        return Results.Ok(positions.Select(p => new
+        {
+            p.Id,
+            p.CompteTradingId,
+            p.InstrumentId,
+            p.Quantity,
+            p.CostBasis,
+            p.AverageAcquisitionCost,
+            p.RealizedPnl
+        }).ToArray());
+    })
+    .RequireAuthorization("PlayerOnly");
+
+// Real, immutable funding entries. Other players cannot inspect this ledger.
+app.MapGet("/api/accounts/{id:guid}/journal",
+    async (
+        Guid id,
+        ClaimsPrincipal user,
+        QuantDeskDbContext db,
+        CancellationToken ct) =>
+    {
+        if (!Guid.TryParse(user.FindFirst("quantdesk_user_id")?.Value,
+                out var userId))
+            return Results.Unauthorized();
+
+        var ownsAccount = await db.ComptesTrading
+            .AsNoTracking()
+            .AnyAsync(a => a.Id == id && a.OwnerUserId == userId, ct);
+
+        if (!ownsAccount)
+            return Results.NotFound();
+
+        var entries = await db.CashJournal
+            .AsNoTracking()
+            .Where(j => j.CompteTradingId == id)
+            .OrderByDescending(j => j.CreatedAtUtc)
+            .Select(j => new
+            {
+                j.Id,
+                j.CompteTradingId,
+                j.Amount,
+                j.EventKey,
+                j.CreatedAtUtc
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(entries);
+    })
+    .RequireAuthorization("PlayerOnly");
+
 // -------------------------------------------------------
 // Start application
 // -------------------------------------------------------
