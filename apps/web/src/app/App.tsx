@@ -23,6 +23,24 @@ type TradingAccount = {
   createdAtUtc?: string
 }
 
+type StockPosition = {
+  id: string
+  compteTradingId: string
+  instrumentId: string
+  quantity: number
+  costBasis: number
+  averageAcquisitionCost: number
+  realizedPnl: number
+}
+
+type CashJournalRow = {
+  id: string
+  compteTradingId: string
+  amount: number
+  eventKey: string
+  createdAtUtc: string
+}
+
 type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
 type AccountStatus = 'idle' | 'loading' | 'ready' | 'error'
 type View = 'overview' | 'portfolio' | 'profile' | 'modules'
@@ -82,6 +100,13 @@ export function App() {
   const [accountMessage, setAccountMessage] = useState('')
   const [creatingAccount, setCreatingAccount] = useState(false)
   const [accountsRevision, setAccountsRevision] = useState(0)
+
+  const [positions, setPositions] = useState<StockPosition[]>([])
+  const [positionsStatus, setPositionsStatus] = useState<AccountStatus>('idle')
+  const [positionsError, setPositionsError] = useState('')
+  const [cashJournal, setCashJournal] = useState<CashJournalRow[]>([])
+  const [journalStatus, setJournalStatus] = useState<AccountStatus>('idle')
+  const [journalError, setJournalError] = useState('')
 
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('Offline')
   const [latestNotification, setLatestNotification] = useState<string | null>(null)
@@ -180,6 +205,70 @@ export function App() {
 
     return () => controller.abort()
   }, [sessionStatus, user?.quantDeskUserId, refreshKey, accountsRevision])
+
+  const personalAccountId = accounts.find((account) => account.accountType === 'Personal')?.id ?? null
+
+  useEffect(() => {
+    if (sessionStatus !== 'authenticated' || !personalAccountId) {
+      setPositions([])
+      setPositionsStatus('idle')
+      setCashJournal([])
+      setJournalStatus('idle')
+      return
+    }
+
+    const controller = new AbortController()
+    setPositions([])
+    setPositionsStatus('loading')
+    setPositionsError('')
+    setCashJournal([])
+    setJournalStatus('loading')
+    setJournalError('')
+
+    const loadPositions = async () => {
+      try {
+        const response = await fetch(`/api/accounts/${encodeURIComponent(personalAccountId)}/positions`, {
+          credentials: 'same-origin', signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`Positions API: HTTP ${response.status}`)
+        const body: unknown = await response.json()
+        if (!Array.isArray(body)) throw new Error('Invalid positions response')
+        if (!controller.signal.aborted) {
+          setPositions(body as StockPosition[])
+          setPositionsStatus('ready')
+        }
+      } catch (error: unknown) {
+        if (!controller.signal.aborted) {
+          setPositionsError(String(error))
+          setPositionsStatus('error')
+        }
+      }
+    }
+
+    const loadJournal = async () => {
+      try {
+        const response = await fetch(`/api/accounts/${encodeURIComponent(personalAccountId)}/journal`, {
+          credentials: 'same-origin', signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`Cash journal API: HTTP ${response.status}`)
+        const body: unknown = await response.json()
+        if (!Array.isArray(body)) throw new Error('Invalid cash journal response')
+        if (!controller.signal.aborted) {
+          setCashJournal(body as CashJournalRow[])
+          setJournalStatus('ready')
+        }
+      } catch (error: unknown) {
+        if (!controller.signal.aborted) {
+          setJournalError(String(error))
+          setJournalStatus('error')
+        }
+      }
+    }
+
+    void loadPositions()
+    void loadJournal()
+    return () => controller.abort()
+  }, [sessionStatus, personalAccountId, refreshKey, accountsRevision])
 
   useEffect(() => {
     if (sessionStatus !== 'authenticated') {
@@ -300,6 +389,9 @@ export function App() {
   }
 
   const personalAccount = accounts.find((account) => account.accountType === 'Personal') ?? null
+  const positionsCostBasis = positions.reduce((sum, position) => sum + position.costBasis, 0)
+  const totalRealizedPnl = positions.reduce((sum, position) => sum + position.realizedPnl, 0)
+  const positionCurrency = personalAccount?.currency ?? 'USD'
   const isAuthenticated = sessionStatus === 'authenticated'
   const accountPanel = (
     <section className="identity-panel" aria-label="Personal trading account">
@@ -424,9 +516,70 @@ export function App() {
           {view === 'portfolio' && (
             <>
               {accountPanel}
-              <section className="modules-panel" style={{ marginTop: 24 }}>
-                <div className="section-heading"><div><span className="eyebrow">ACCOUNTING</span><h2>Positions & performance</h2></div></div>
-                <p className="muted">Positions, order history, reserved cash and P&L will appear when the trading engine and portfolio APIs are implemented. No estimated or simulated performance is shown here.</p>
+              <section className="modules-panel portfolio-positions" aria-label="Portfolio holdings">
+                <div className="section-heading">
+                  <div><span className="eyebrow">PORTFOLIO / STOCK HOLDINGS</span><h2>Positions & realized performance</h2></div>
+                  <span className="muted">Database-backed · long-only</span>
+                </div>
+                <p className="muted">Values below are sourced from your own portfolio. Cost basis and realized P&L are from executed fills; live valuation and unrealized P&L require market-price integration.</p>
+                {personalAccount && positionsStatus === 'ready' && (
+                  <div className="portfolio-kpis">
+                    <div className="portfolio-kpi"><span>Stock instruments</span><strong>{positions.filter((item) => item.quantity > 0).length}</strong><small>Open holdings</small></div>
+                    <div className="portfolio-kpi"><span>Total stock cost basis</span><strong>{formatMoney(positionsCostBasis, positionCurrency)}</strong><small>Historical acquisition cost</small></div>
+                    <div className="portfolio-kpi"><span>Realized stock P&L</span><strong className={totalRealizedPnl < 0 ? 'money-negative' : totalRealizedPnl > 0 ? 'money-positive' : ''}>{formatMoney(totalRealizedPnl, positionCurrency)}</strong><small>Before fees</small></div>
+                  </div>
+                )}
+                {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
+                {isAuthenticated && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
+                {personalAccount && positionsStatus === 'loading' && <p role="status">Loading positions from PostgreSQL...</p>}
+                {personalAccount && positionsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {positionsError}</div>}
+                {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
+                  <div className="portfolio-empty">
+                    <strong>No stock positions yet</strong>
+                    <p>Once a validated order is matched and settled, your holdings will appear here automatically. Your virtual cash balance remains unchanged until settlement is integrated.</p>
+                  </div>
+                )}
+                {personalAccount && positionsStatus === 'ready' && positions.length > 0 && (
+                  <div className="portfolio-table-scroll">
+                    <table className="portfolio-table">
+                      <thead><tr><th scope="col">Instrument</th><th scope="col">Shares</th><th scope="col">Avg. acquisition</th><th scope="col">Cost basis</th><th scope="col">Realized P&L</th></tr></thead>
+                      <tbody>
+                        {positions.map((position) => (
+                          <tr key={position.id}>
+                            <td><strong className="instrument-symbol">{position.instrumentId}</strong>{position.quantity === 0 && <small className="closed-position">Closed position</small>}</td>
+                            <td>{position.quantity.toLocaleString('en-US')}</td>
+                            <td>{formatMoney(position.averageAcquisitionCost, positionCurrency)}</td>
+                            <td>{formatMoney(position.costBasis, positionCurrency)}</td>
+                            <td className={position.realizedPnl < 0 ? 'money-negative' : position.realizedPnl > 0 ? 'money-positive' : ''}>{formatMoney(position.realizedPnl, positionCurrency)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+              <section className="modules-panel portfolio-journal" aria-label="Cash transaction journal">
+                <div className="section-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Cash journal</h2></div><span className="muted">Immutable funding records</span></div>
+                {!personalAccount && <p className="muted">Your transaction journal becomes available once you have an account.</p>}
+                {personalAccount && journalStatus === 'loading' && <p role="status">Loading cash entries...</p>}
+                {personalAccount && journalStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load journal: {journalError}</div>}
+                {personalAccount && journalStatus === 'ready' && cashJournal.length === 0 && <p className="muted">No cash entries found.</p>}
+                {personalAccount && journalStatus === 'ready' && cashJournal.length > 0 && (
+                  <div className="portfolio-table-scroll">
+                    <table className="portfolio-table">
+                      <thead><tr><th scope="col">Date</th><th scope="col">Event</th><th scope="col">Amount</th></tr></thead>
+                      <tbody>
+                        {cashJournal.map((entry) => (
+                          <tr key={entry.id}>
+                            <td>{formatDate(entry.createdAtUtc)}</td>
+                            <td className="journal-event">{entry.eventKey.startsWith('initial-funding:') ? 'Initial virtual funding' : entry.eventKey}</td>
+                            <td className={entry.amount < 0 ? 'money-negative' : 'money-positive'}>{formatMoney(entry.amount, positionCurrency)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </section>
             </>
           )}

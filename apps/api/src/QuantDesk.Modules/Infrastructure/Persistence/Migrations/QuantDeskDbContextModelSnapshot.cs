@@ -122,13 +122,73 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("owner_user_id");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("OwnerUserId")
                         .IsUnique()
                         .HasFilter("account_type = 'Personal'");
 
-                    b.ToTable("comptes_trading", (string)null);
+                    b.ToTable("comptes_trading", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comptes_trading_cash_nonnegative", "cash_balance >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityTradeSettlement", b =>
+                {
+                    b.Property<Guid>("ExecutionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("execution_id");
+
+                    b.Property<Guid>("BuyerAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("buyer_account_id");
+
+                    b.Property<decimal>("ExecutionPrice")
+                        .HasPrecision(20, 4)
+                        .HasColumnType("numeric(20,4)")
+                        .HasColumnName("execution_price");
+
+                    b.Property<string>("InstrumentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("instrument_id");
+
+                    b.Property<long>("Quantity")
+                        .HasColumnType("bigint")
+                        .HasColumnName("quantity");
+
+                    b.Property<Guid>("SellerAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("seller_account_id");
+
+                    b.Property<DateTime>("SettledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("settled_at_utc");
+
+                    b.HasKey("ExecutionId");
+
+                    b.HasIndex("BuyerAccountId");
+
+                    b.HasIndex("SellerAccountId");
+
+                    b.ToTable("equity_trade_settlements", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_equity_settlement_different_accounts", "buyer_account_id <> seller_account_id");
+
+                            t.HasCheckConstraint("ck_equity_settlement_price_positive", "execution_price > 0");
+
+                            t.HasCheckConstraint("ck_equity_settlement_quantity_positive", "quantity > 0");
+                        });
                 });
 
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", b =>
@@ -140,6 +200,59 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.HasKey("CompteTradingId");
 
                     b.ToTable("portefeuilles", (string)null);
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.PositionAction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompteTradingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("compte_trading_id");
+
+                    b.Property<decimal>("CostBasis")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("numeric(28,8)")
+                        .HasColumnName("cost_basis");
+
+                    b.Property<string>("InstrumentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("instrument_id");
+
+                    b.Property<long>("Quantity")
+                        .HasColumnType("bigint")
+                        .HasColumnName("quantity");
+
+                    b.Property<decimal>("RealizedPnl")
+                        .HasPrecision(28, 8)
+                        .HasColumnType("numeric(28,8)")
+                        .HasColumnName("realized_pnl");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompteTradingId", "InstrumentId")
+                        .IsUnique();
+
+                    b.ToTable("positions_action", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_positions_action_cost_basis_nonnegative", "cost_basis >= 0");
+
+                            t.HasCheckConstraint("ck_positions_action_quantity_basis_consistent", "(quantity = 0 AND cost_basis = 0) OR (quantity > 0 AND cost_basis > 0)");
+
+                            t.HasCheckConstraint("ck_positions_action_quantity_nonnegative", "quantity >= 0");
+                        });
                 });
 
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CashJournalEntry", b =>
@@ -162,6 +275,21 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityTradeSettlement", b =>
+                {
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", null)
+                        .WithMany()
+                        .HasForeignKey("BuyerAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", null)
+                        .WithMany()
+                        .HasForeignKey("SellerAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", b =>
                 {
                     b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", "CompteTrading")
@@ -173,12 +301,28 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.Navigation("CompteTrading");
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.PositionAction", b =>
+                {
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", "Portefeuille")
+                        .WithMany("Positions")
+                        .HasForeignKey("CompteTradingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Portefeuille");
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", b =>
                 {
                     b.Navigation("Journal");
 
                     b.Navigation("Portefeuille")
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.Portefeuille", b =>
+                {
+                    b.Navigation("Positions");
                 });
 #pragma warning restore 612, 618
         }

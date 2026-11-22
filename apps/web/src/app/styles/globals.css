@@ -351,6 +351,29 @@ p { line-height: 1.65; }
 .module-code { color: #81edbd; font: 11px/1.5 "Cascadia Code", Consolas, monospace; overflow-wrap: anywhere; }
 .module-owner { color: var(--text-muted); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
 
+/* Real portfolio holdings and immutable cash journal */
+.portfolio-positions, .portfolio-journal { margin-top: 24px; }
+.portfolio-positions > .muted { margin-bottom: 25px; }
+.portfolio-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; margin: 24px 0; }
+.portfolio-kpi { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 19px; border: 1px solid var(--border-strong); border-radius: 13px; background: rgba(19, 38, 53, .75); }
+.portfolio-kpi span, .portfolio-kpi small { color: var(--text-muted); font-size: 11px; }
+.portfolio-kpi strong { font-size: clamp(18px, 2.2vw, 26px); font-weight: 750; letter-spacing: -.035em; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.money-positive { color: #8ceac0 !important; }
+.money-negative { color: #ff9ca3 !important; }
+.portfolio-empty { padding: 25px 23px; border: 1px dashed #3b5965; border-radius: 13px; background: #122230; }
+.portfolio-empty strong { color: #d6e6ee; }
+.portfolio-empty p { max-width: 700px; margin: 9px 0 0; font-size: 13px; line-height: 1.7; color: var(--text-muted); }
+.portfolio-table-scroll { width: 100%; overflow-x: auto; margin-top: 19px; }
+.portfolio-table { width: 100%; min-width: 630px; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.portfolio-table th { padding: 13px 13px; text-align: left; color: #9bafc1; font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid #415669; }
+.portfolio-table td { padding: 17px 13px; border-bottom: 1px solid rgba(158, 184, 205, .13); white-space: nowrap; }
+.portfolio-table th:not(:first-child), .portfolio-table td:not(:first-child) { text-align: right; }
+.portfolio-table tbody tr:hover { background: rgba(109, 208, 174, .045); }
+.instrument-symbol { letter-spacing: .04em; color: #dfebf2; }
+.closed-position { display: block; margin-top: 4px; color: var(--text-muted); font-size: 10px; }
+.journal-event { max-width: 430px; overflow-wrap: anywhere; white-space: normal !important; }
+@media (max-width: 760px) { .portfolio-kpis { grid-template-columns: 1fr; } }
+
 /* Errors and loading */
 .alert {
   margin-bottom: 21px;
