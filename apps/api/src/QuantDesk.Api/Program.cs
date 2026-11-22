@@ -15,6 +15,7 @@ using QuantDesk.Api.Authorization;
 using QuantDesk.Api.Realtime;
 using Microsoft.AspNetCore.SignalR;
 using QuantDesk.Modules.Portfolio.Domain.Entities;
+using QuantDesk.Api.Portfolio;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -673,6 +674,8 @@ app.MapGet("/api/accounts/{id:guid}/journal",
 // -------------------------------------------------------
 // Start application
 // -------------------------------------------------------
+
+app.MapPortfolioInsights();
 
 app.Run();
 

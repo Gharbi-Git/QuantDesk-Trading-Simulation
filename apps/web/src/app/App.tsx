@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { HubConnectionBuilder } from '@microsoft/signalr'
 import { productName } from './config'
+import { PortfolioInsights } from './PortfolioInsights'
+import type { PortfolioValuation, BalanceHistory, SettledTrade } from './PortfolioInsights'
 
 type Module = {
   code: string
@@ -58,7 +61,7 @@ const workspaces = [
   { name: 'Strategy Registry', description: 'Strategy versions and deployments' },
   { name: 'Paper Trading', description: 'Virtual orders and execution workflows' },
   { name: 'Portfolio', description: 'Accounts, positions, and balances' },
-  { name: 'Arena', description: 'Simulation sessions and challenges' },
+  { name: 'Arena', description: '1v1 strategy battles and synchronized market sessions' },
   { name: 'Administration', description: 'Authorized platform management' },
 ]
 
@@ -81,8 +84,23 @@ function formatDate(value?: string): string {
   return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleDateString()
 }
 
+function readViewFromHash(): View {
+  const raw = window.location.hash.replace(/^#/, '')
+  return navigation.some((item) => item.id === raw) ? raw as View : 'overview'
+}
+
 export function App() {
-  const [view, setView] = useState<View>('overview')
+  const [view, setView] = useState<View>(readViewFromHash)
+  useEffect(() => {
+    const handle = () => setView(readViewFromHash())
+    window.addEventListener('hashchange', handle)
+    return () => window.removeEventListener('hashchange', handle)
+  }, [])
+  function navigate(next: View) {
+    window.location.hash = next
+    setView(next)
+  }
+
   const [refreshKey, setRefreshKey] = useState(0)
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('loading')
   const [user, setUser] = useState<User | null>(null)
@@ -100,6 +118,7 @@ export function App() {
   const [accountMessage, setAccountMessage] = useState('')
   const [creatingAccount, setCreatingAccount] = useState(false)
   const [accountsRevision, setAccountsRevision] = useState(0)
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
 
   const [positions, setPositions] = useState<StockPosition[]>([])
   const [positionsStatus, setPositionsStatus] = useState<AccountStatus>('idle')
@@ -107,6 +126,12 @@ export function App() {
   const [cashJournal, setCashJournal] = useState<CashJournalRow[]>([])
   const [journalStatus, setJournalStatus] = useState<AccountStatus>('idle')
   const [journalError, setJournalError] = useState('')
+  const [valuation, setValuation] = useState<PortfolioValuation | null>(null)
+  const [balanceHistory, setBalanceHistory] = useState<BalanceHistory | null>(null)
+  const [recentTrades, setRecentTrades] = useState<SettledTrade[]>([])
+  const [insightsStatus, setInsightsStatus] = useState<AccountStatus>('idle')
+  const [insightsError, setInsightsError] = useState('')
+  const [liveRetryKey, setLiveRetryKey] = useState(0)
 
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('Offline')
   const [latestNotification, setLatestNotification] = useState<string | null>(null)
@@ -206,7 +231,9 @@ export function App() {
     return () => controller.abort()
   }, [sessionStatus, user?.quantDeskUserId, refreshKey, accountsRevision])
 
-  const personalAccountId = accounts.find((account) => account.accountType === 'Personal')?.id ?? null
+  const personalAccountId = accounts.find((a) => a.id === selectedAccountId)?.id
+    ?? accounts.find((a) => a.accountType === 'Personal')?.id
+    ?? accounts[0]?.id ?? null
 
   useEffect(() => {
     if (sessionStatus !== 'authenticated' || !personalAccountId) {
@@ -271,6 +298,53 @@ export function App() {
   }, [sessionStatus, personalAccountId, refreshKey, accountsRevision])
 
   useEffect(() => {
+    if (sessionStatus !== 'authenticated' || !personalAccountId) {
+      setValuation(null)
+      setBalanceHistory(null)
+      setRecentTrades([])
+      setInsightsStatus('idle')
+      setInsightsError('')
+      return
+    }
+    const controller = new AbortController()
+    setValuation(null)
+    setBalanceHistory(null)
+    setRecentTrades([])
+    setInsightsError('')
+    setInsightsStatus('loading')
+
+    const load = async () => {
+      const base = `/api/accounts/${encodeURIComponent(personalAccountId)}`
+      try {
+        const urls = [`${base}/valuation`, `${base}/balance-history`, `${base}/trades`]
+        const responses = await Promise.all(urls.map((url) => fetch(url, {
+          credentials: 'same-origin', signal: controller.signal,
+        })))
+        for (let i = 0; i < responses.length; i++) {
+          if (!responses[i].ok) throw new Error(`${urls[i]}: HTTP ${responses[i].status}`)
+        }
+        const [summary, history, trades] = await Promise.all(responses.map((r) => r.json()))
+        if (!Array.isArray(trades) || !Array.isArray(history.history) || !Array.isArray(summary.positions)) {
+          throw new Error('Unexpected portfolio analytics API response')
+        }
+        if (!controller.signal.aborted) {
+          setValuation(summary as PortfolioValuation)
+          setBalanceHistory(history as BalanceHistory)
+          setRecentTrades(trades as SettledTrade[])
+          setInsightsStatus('ready')
+        }
+      } catch (error: unknown) {
+        if (!controller.signal.aborted) {
+          setInsightsStatus('error')
+          setInsightsError(String(error))
+        }
+      }
+    }
+    void load()
+    return () => controller.abort()
+  }, [sessionStatus, personalAccountId, refreshKey, accountsRevision])
+
+  useEffect(() => {
     if (sessionStatus !== 'authenticated') {
       setLiveStatus('Offline')
       setLatestNotification(null)
@@ -324,7 +398,7 @@ export function App() {
       active = false
       void connection.stop().catch(() => {})
     }
-  }, [sessionStatus, user?.quantDeskUserId])
+  }, [sessionStatus, user?.quantDeskUserId, liveRetryKey])
 
   function refresh() {
     setActionError('')
@@ -388,17 +462,26 @@ export function App() {
     }
   }
 
-  const personalAccount = accounts.find((account) => account.accountType === 'Personal') ?? null
-  const positionsCostBasis = positions.reduce((sum, position) => sum + position.costBasis, 0)
-  const totalRealizedPnl = positions.reduce((sum, position) => sum + position.realizedPnl, 0)
+  const personalAccount = accounts.find((account) => account.id === personalAccountId) ?? null
   const positionCurrency = personalAccount?.currency ?? 'USD'
   const isAuthenticated = sessionStatus === 'authenticated'
   const accountPanel = (
-    <section className="identity-panel" aria-label="Personal trading account">
+    <section className="identity-panel" aria-label="Selected trading account">
       <div>
-        <span className="eyebrow">VIRTUAL TRADING</span>
-        <h2>Personal trading account</h2>
-        <p>Balances are loaded from QuantDesk's PostgreSQL-backed API, not sample values.</p>
+        <span className="eyebrow">ACCOUNT CONTROL CENTER</span>
+        <h2>Trading account</h2>
+        <p>Each account has its own cash ledger and stock positions. Figures below come from PostgreSQL, not demo placeholders.</p>
+        {isAuthenticated && accounts.length > 0 && (
+          <label className="account-select-field">
+            <span>ACTIVE ACCOUNT</span>
+            <select aria-label="Active trading account" value={personalAccountId ?? ''}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => setSelectedAccountId(event.target.value)}>
+              {accounts.map((account) => <option key={account.id} value={account.id}>
+                {account.accountType} · {account.currency} · {account.id.slice(0, 8)}
+              </option>)}
+            </select>
+          </label>
+        )}
         {accountMessage && <p role="status">{accountMessage}</p>}
       </div>
       <div className="identity-details">
@@ -418,7 +501,7 @@ export function App() {
           </>
         ) : (
           <>
-            <p>You don't have a personal trading account yet.</p>
+            <p>You don't have a trading account yet. Create a personal account to start with virtual funding.</p>
             <button type="button" className="button button-primary"
               onClick={() => void createPersonalAccount()} disabled={creatingAccount}>
               {creatingAccount ? 'Creating account...' : 'Create virtual trading account'}
@@ -442,7 +525,7 @@ export function App() {
             <button key={item.id} type="button"
               className={view === item.id ? 'nav-item active' : 'nav-item'}
               aria-current={view === item.id ? 'page' : undefined}
-              onClick={() => setView(item.id)}>
+              onClick={() => navigate(item.id)}>
               <span aria-hidden="true">{item.symbol}</span>{item.label}
             </button>
           ))}
@@ -460,6 +543,15 @@ export function App() {
             <h1>{navigation.find((item) => item.id === view)?.label}</h1>
           </div>
           <div className="topbar-actions">
+            {isAuthenticated && (
+              <div className="connection-control" aria-live="polite">
+                <span className={liveStatus === 'Connected' ? 'connection-dot on' : 'connection-dot'} />
+                <span>{liveStatus === 'Connected' ? 'Live connection' : liveStatus}</span>
+                {(liveStatus === 'Connection failed' || liveStatus === 'Offline') && (
+                  <button type="button" className="connection-retry" onClick={() => setLiveRetryKey((v) => v + 1)}>Retry</button>
+                )}
+              </div>
+            )}
             <button type="button" className="button button-secondary" onClick={refresh}>Refresh</button>
             {isAuthenticated ? (
               <div className="user-menu">
@@ -485,7 +577,7 @@ export function App() {
           )}
           {sessionStatus === 'loading' && <div className="alert" role="status">Checking your session...</div>}
           {sessionStatus === 'anonymous' && (
-            <div className="alert">You're browsing as a guest. Sign in to use your personal account.</div>
+            <div className="alert">You're browsing as a guest. Sign in to access your virtual accounts and portfolio.</div>
           )}
 
           {view === 'overview' && (
@@ -494,18 +586,23 @@ export function App() {
                 <div>
                   <span className="eyebrow">TRADING SIMULATION WORKSPACE</span>
                   <h2>{isAuthenticated ? `Welcome back, ${user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
-                  <p>Manage your virtual trading account and follow the platform's modules as they become available.</p>
+                  <p>A professional workspace for virtual trading, portfolio accounting and competitive strategy simulation. Every number comes from your account.</p>
                   <button type="button" className="button button-primary"
-                    onClick={() => setView('portfolio')}>View my portfolio</button>
+                    onClick={() => navigate('portfolio')}>View my portfolio</button>
                 </div>
                 <div className="welcome-symbol" aria-hidden="true">Q</div>
               </section>
               {accountPanel}
+              {isAuthenticated && personalAccount && (
+                <PortfolioInsights currency={personalAccount.currency} cash={personalAccount.cashBalance}
+                  valuation={valuation} history={balanceHistory} trades={recentTrades}
+                  loading={insightsStatus === 'loading'} error={insightsError} compact />
+              )}
               <div className="section-heading"><div><span className="eyebrow">PLATFORM</span><h2>Explore QuantDesk</h2></div><span className="muted">Module roadmap</span></div>
               <div className="workspace-grid">
                 {workspaces.map((workspace) => (
                   <article className="workspace-card" key={workspace.name}>
-                    <span className="planned-label">IN DEVELOPMENT</span>
+                    <span className="planned-label">MODULE ROADMAP</span>
                     <h3>{workspace.name}</h3><p>{workspace.description}</p>
                   </article>
                 ))}
@@ -516,19 +613,17 @@ export function App() {
           {view === 'portfolio' && (
             <>
               {accountPanel}
+              {personalAccount && (
+                <PortfolioInsights currency={personalAccount.currency} cash={personalAccount.cashBalance}
+                  valuation={valuation} history={balanceHistory} trades={recentTrades}
+                  loading={insightsStatus === 'loading'} error={insightsError} />
+              )}
               <section className="modules-panel portfolio-positions" aria-label="Portfolio holdings">
                 <div className="section-heading">
                   <div><span className="eyebrow">PORTFOLIO / STOCK HOLDINGS</span><h2>Positions & realized performance</h2></div>
                   <span className="muted">Database-backed · long-only</span>
                 </div>
-                <p className="muted">Values below are sourced from your own portfolio. Cost basis and realized P&L are from executed fills; live valuation and unrealized P&L require market-price integration.</p>
-                {personalAccount && positionsStatus === 'ready' && (
-                  <div className="portfolio-kpis">
-                    <div className="portfolio-kpi"><span>Stock instruments</span><strong>{positions.filter((item) => item.quantity > 0).length}</strong><small>Open holdings</small></div>
-                    <div className="portfolio-kpi"><span>Total stock cost basis</span><strong>{formatMoney(positionsCostBasis, positionCurrency)}</strong><small>Historical acquisition cost</small></div>
-                    <div className="portfolio-kpi"><span>Realized stock P&L</span><strong className={totalRealizedPnl < 0 ? 'money-negative' : totalRealizedPnl > 0 ? 'money-positive' : ''}>{formatMoney(totalRealizedPnl, positionCurrency)}</strong><small>Before fees</small></div>
-                  </div>
-                )}
+                <p className="muted">Cost basis and realized P&L come from settled executions. Indicative market value and unrealized P&L use recent QuantDesk trade prices, not live exchange quotes.</p>
                 {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
                 {isAuthenticated && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
                 {personalAccount && positionsStatus === 'loading' && <p role="status">Loading positions from PostgreSQL...</p>}
@@ -536,30 +631,33 @@ export function App() {
                 {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
                   <div className="portfolio-empty">
                     <strong>No stock positions yet</strong>
-                    <p>Once a validated order is matched and settled, your holdings will appear here automatically. Your virtual cash balance remains unchanged until settlement is integrated.</p>
+                    <p>After M06 matches orders and the trusted settlement service records executions, real holdings will appear here. Test fixtures are never presented as player trades.</p>
                   </div>
                 )}
                 {personalAccount && positionsStatus === 'ready' && positions.length > 0 && (
                   <div className="portfolio-table-scroll">
                     <table className="portfolio-table">
-                      <thead><tr><th scope="col">Instrument</th><th scope="col">Shares</th><th scope="col">Avg. acquisition</th><th scope="col">Cost basis</th><th scope="col">Realized P&L</th></tr></thead>
+                      <thead><tr><th scope="col">Instrument</th><th scope="col">Shares</th><th scope="col">Avg. acquisition</th><th scope="col">Cost basis</th><th scope="col">Last trade mark</th><th scope="col">Unrealized P&L</th><th scope="col">Realized P&L</th></tr></thead>
                       <tbody>
-                        {positions.map((position) => (
-                          <tr key={position.id}>
+                        {positions.map((position) => {
+                          const marked = valuation?.positions.find((p) => p.instrumentId === position.instrumentId)
+                          return <tr key={position.id}>
                             <td><strong className="instrument-symbol">{position.instrumentId}</strong>{position.quantity === 0 && <small className="closed-position">Closed position</small>}</td>
                             <td>{position.quantity.toLocaleString('en-US')}</td>
                             <td>{formatMoney(position.averageAcquisitionCost, positionCurrency)}</td>
                             <td>{formatMoney(position.costBasis, positionCurrency)}</td>
+                            <td>{marked?.markPrice == null ? '—' : formatMoney(marked.markPrice, positionCurrency)}</td>
+                            <td className={marked && (marked.unrealizedPnl ?? 0) < 0 ? 'money-negative' : marked && (marked.unrealizedPnl ?? 0) > 0 ? 'money-positive' : ''}>{marked?.unrealizedPnl == null ? '—' : formatMoney(marked.unrealizedPnl, positionCurrency)}</td>
                             <td className={position.realizedPnl < 0 ? 'money-negative' : position.realizedPnl > 0 ? 'money-positive' : ''}>{formatMoney(position.realizedPnl, positionCurrency)}</td>
                           </tr>
-                        ))}
+                        })}
                       </tbody>
                     </table>
                   </div>
                 )}
               </section>
               <section className="modules-panel portfolio-journal" aria-label="Cash transaction journal">
-                <div className="section-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Cash journal</h2></div><span className="muted">Immutable funding records</span></div>
+                <div className="section-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Cash journal</h2></div><span className="muted">Funding and settled trade movements</span></div>
                 {!personalAccount && <p className="muted">Your transaction journal becomes available once you have an account.</p>}
                 {personalAccount && journalStatus === 'loading' && <p role="status">Loading cash entries...</p>}
                 {personalAccount && journalStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load journal: {journalError}</div>}
@@ -572,7 +670,7 @@ export function App() {
                         {cashJournal.map((entry) => (
                           <tr key={entry.id}>
                             <td>{formatDate(entry.createdAtUtc)}</td>
-                            <td className="journal-event">{entry.eventKey.startsWith('initial-funding:') ? 'Initial virtual funding' : entry.eventKey}</td>
+                            <td className="journal-event">{entry.eventKey.startsWith('initial-funding:') ? 'Initial virtual funding' : entry.eventKey.startsWith('stock-fill:') ? (entry.amount < 0 ? 'Stock trade · buy settlement' : 'Stock trade · sell settlement') : entry.eventKey}</td>
                             <td className={entry.amount < 0 ? 'money-negative' : 'money-positive'}>{formatMoney(entry.amount, positionCurrency)}</td>
                           </tr>
                         ))}
