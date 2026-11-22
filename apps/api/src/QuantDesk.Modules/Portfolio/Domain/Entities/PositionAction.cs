@@ -17,6 +17,7 @@ public sealed class PositionAction
     public long Quantity { get; private set; }
     public decimal CostBasis { get; private set; }
     public decimal RealizedPnl { get; private set; }
+    public long Version { get; private set; }
 
     // Derived, not separately stored: cannot become inconsistent with Quantity/CostBasis.
     public decimal AverageAcquisitionCost =>
@@ -60,6 +61,7 @@ public sealed class PositionAction
 
         Quantity = nextQuantity;
         CostBasis = nextCostBasis;
+        Version = checked(Version + 1);
     }
 
     /// <summary>
@@ -91,6 +93,7 @@ public sealed class PositionAction
         Quantity = remainingQuantity;
         CostBasis = remainingBasis;
         RealizedPnl = nextRealized;
+        Version = checked(Version + 1);
         return realizedOnFill;
     }
 

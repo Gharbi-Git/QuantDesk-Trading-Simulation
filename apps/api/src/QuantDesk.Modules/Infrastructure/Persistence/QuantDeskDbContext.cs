@@ -16,6 +16,7 @@ public sealed class QuantDeskDbContext : DbContext
     public DbSet<Portefeuille> Portefeuilles => Set<Portefeuille>();
     public DbSet<CashJournalEntry> CashJournal => Set<CashJournalEntry>();
     public DbSet<PositionAction> PositionsAction => Set<PositionAction>();
+    public DbSet<EquityTradeSettlement> EquitySettlements => Set<EquityTradeSettlement>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -46,7 +47,8 @@ public sealed class QuantDeskDbContext : DbContext
 
         modelBuilder.Entity<CompteTrading>(entity =>
         {
-            entity.ToTable("comptes_trading");
+            entity.ToTable("comptes_trading", table =>
+                table.HasCheckConstraint("ck_comptes_trading_cash_nonnegative", "cash_balance >= 0"));
             entity.HasKey(a => a.Id);
             entity.Property(a => a.OwnerUserId)
                 .HasColumnName("owner_user_id")
@@ -62,6 +64,10 @@ public sealed class QuantDeskDbContext : DbContext
             entity.Property(a => a.CashBalance)
                 .HasColumnName("cash_balance")
                 .HasPrecision(20, 4);
+            entity.Property(a => a.Version)
+                .HasColumnName("version")
+                .HasDefaultValue(0L)
+                .IsConcurrencyToken();
             entity.Property(a => a.CreatedAtUtc)
                 .HasColumnName("created_at_utc");
             entity.HasIndex(a => a.OwnerUserId)
@@ -140,9 +146,37 @@ public sealed class QuantDeskDbContext : DbContext
             entity.Property(p => p.RealizedPnl)
                 .HasColumnName("realized_pnl")
                 .HasPrecision(28, 8);
+            entity.Property(p => p.Version)
+                .HasColumnName("version")
+                .HasDefaultValue(0L)
+                .IsConcurrencyToken();
             entity.Ignore(p => p.AverageAcquisitionCost);
             entity.HasIndex(p => new { p.CompteTradingId, p.InstrumentId })
                 .IsUnique();
+        });
+        modelBuilder.Entity<EquityTradeSettlement>(entity =>
+        {
+            entity.ToTable("equity_trade_settlements", table =>
+            {
+                table.HasCheckConstraint("ck_equity_settlement_quantity_positive", "quantity > 0");
+                table.HasCheckConstraint("ck_equity_settlement_price_positive", "execution_price > 0");
+                table.HasCheckConstraint("ck_equity_settlement_different_accounts", "buyer_account_id <> seller_account_id");
+            });
+            entity.HasKey(e => e.ExecutionId);
+            entity.Property(e => e.ExecutionId).HasColumnName("execution_id");
+            entity.Property(e => e.BuyerAccountId).HasColumnName("buyer_account_id");
+            entity.Property(e => e.SellerAccountId).HasColumnName("seller_account_id");
+            entity.Property(e => e.InstrumentId).HasColumnName("instrument_id")
+                .HasMaxLength(128).IsRequired();
+            entity.Property(e => e.Quantity).HasColumnName("quantity");
+            entity.Property(e => e.ExecutionPrice).HasColumnName("execution_price")
+                .HasPrecision(20, 4);
+            entity.Property(e => e.SettledAtUtc).HasColumnName("settled_at_utc")
+                .HasColumnType("timestamp with time zone");
+            entity.HasOne<CompteTrading>().WithMany()
+                .HasForeignKey(e => e.BuyerAccountId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<CompteTrading>().WithMany()
+                .HasForeignKey(e => e.SellerAccountId).OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

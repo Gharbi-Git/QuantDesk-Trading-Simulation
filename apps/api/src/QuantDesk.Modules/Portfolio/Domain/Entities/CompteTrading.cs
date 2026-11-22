@@ -12,6 +12,9 @@ public sealed class CompteTrading
 
     public decimal CashBalance { get; private set; }
 
+    // Explicit optimistic concurrency token; every settled cash mutation advances it.
+    public long Version { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; } =
         DateTime.UtcNow;
 
@@ -20,6 +23,24 @@ public sealed class CompteTrading
     public List<CashJournalEntry> Journal { get; private set; } = new();
 
     private CompteTrading() { }
+
+    /// <summary>
+    /// Internal-only cash mutation for validated execution settlement. Never called
+    /// directly from an HTTP request. The service writes a matching journal row
+    /// in the same PostgreSQL transaction.
+    /// </summary>
+    internal void ApplySettlementCash(decimal signedAmount)
+    {
+        if (signedAmount == 0m || decimal.Round(signedAmount, 4) != signedAmount)
+            throw new ArgumentOutOfRangeException(nameof(signedAmount));
+
+        var nextBalance = checked(CashBalance + signedAmount);
+        if (nextBalance < 0m)
+            throw new InvalidOperationException("Insufficient available cash for execution.");
+
+        CashBalance = nextBalance;
+        Version = checked(Version + 1);
+    }
 
     public static CompteTrading OpenPersonal(
         Guid ownerUserId,
