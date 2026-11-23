@@ -1,4 +1,6 @@
 import './styles/identity-upgrade.css'
+import './styles/quantdesk-luxury.css'
+import './styles/quantdesk-hero.css'
 import { useEffect, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { HubConnectionBuilder } from '@microsoft/signalr'
@@ -101,8 +103,20 @@ function readViewFromHash(): View {
   return navigation.some((item) => item.id === raw) ? raw as View : 'overview'
 }
 
+function NavigationIcon({ view }: { view: View }) {
+  const common = { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true as const }
+  if (view === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="8" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="15" width="7" height="6" rx="1.5" /></svg>
+  if (view === 'portfolio') return <svg {...common}><path d="M3 18V5m0 13h18M6.5 14l4-4 3 2.5 5-7" /><path d="M15.5 5.5h3v3" /></svg>
+  if (view === 'profile') return <svg {...common}><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.2-4.2 3-6 7-6s6.8 1.8 7 6" /></svg>
+  if (view === 'modules') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1.3" /><rect x="14" y="3" width="7" height="7" rx="1.3" /><rect x="3" y="14" width="7" height="7" rx="1.3" /><rect x="14" y="14" width="7" height="7" rx="1.3" /></svg>
+  return <svg {...common}><path d="M12 2.5 20 6v5.5c0 4.5-2.9 7.6-8 10-5.1-2.4-8-5.5-8-10V6z" /><path d="m9 12 2 2 4-4" /></svg>
+}
+
 export function App() {
   const [view, setView] = useState<View>(readViewFromHash)
+  const [sidebarExpanded, setSidebarExpanded] = useState(true)
+  const [showAdvancedProfile, setShowAdvancedProfile] = useState(false)
+  const [editingProfile, setEditingProfile] = useState(false)
   useEffect(() => {
     const handle = () => setView(readViewFromHash())
     window.addEventListener('hashchange', handle)
@@ -513,9 +527,9 @@ export function App() {
   const accountPanel = (
     <section className="identity-panel" aria-label="Selected trading account">
       <div>
-        <span className="eyebrow">ACCOUNT CONTROL CENTER</span>
+        <span className="eyebrow">YOUR ACCOUNT</span>
         <h2>Trading account</h2>
-        <p>Each account has its own cash ledger and stock positions. Figures below come from PostgreSQL, not demo placeholders.</p>
+        <p>Each account has its own cash ledger and stock positions. Review your funds, holdings and account performance in one place.</p>
         {isAuthenticated && accounts.length > 0 && (
           <label className="account-select-field">
             <span>ACTIVE ACCOUNT</span>
@@ -547,7 +561,7 @@ export function App() {
             <div><span>Account type</span><strong>{personalAccount.accountType}</strong></div>
             <div><span>Currency</span><strong>{personalAccount.currency}</strong></div>
             <div><span>Created</span><strong>{formatDate(personalAccount.createdAtUtc)}</strong></div>
-            <div><span>Account ID</span><code>{personalAccount.id}</code></div>
+            <details className="account-reference"><summary>Account reference</summary><code>{personalAccount.id}</code></details>
           </>
         ) : (
           <>
@@ -563,25 +577,35 @@ export function App() {
   )
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">Q</div>
-          <div><strong>{productName}</strong><small>Trading Simulation</small></div>
+    <div className={`app-shell luxury-shell ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
+      <aside className="sidebar" aria-label="Main sidebar">
+        <div className="sidebar-brand-row">
+          <div className="brand">
+            <div className="brand-icon"><img className="qd-brand-globe" src="/quantdesk-globe-gold.png" alt="" draggable={false} /></div>
+            <div className="brand-copy"><strong>{productName}</strong><small>THE TRADING STUDIO</small></div>
+          </div>
+          <button type="button" className="sidebar-toggle" aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+            aria-expanded={sidebarExpanded} title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+            onClick={() => setSidebarExpanded(value => !value)}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              {sidebarExpanded ? <path d="m14.5 6-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" /> : <path d="m9.5 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />}
+            </svg>
+          </button>
         </div>
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="navigation" aria-label="Main navigation">
           {navigation.filter(item => item.id !== 'administration' || user?.isAdmin).map((item) => (
             <button key={item.id} type="button"
               className={view === item.id ? 'nav-item active' : 'nav-item'}
+                title={sidebarExpanded ? undefined : item.label}
               aria-current={view === item.id ? 'page' : undefined}
               onClick={() => navigate(item.id)}>
-              <span aria-hidden="true">{item.symbol}</span>{item.label}
+              <span className="nav-symbol"><NavigationIcon view={item.id} /></span><span className="nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="environment-label"><span className="status-dot" />Development environment</div>
+          <div className="environment-label"><span className="status-dot" />Simulation mode</div>
           <small>Virtual funds only · No live trading</small>
         </div>
       </aside>
@@ -589,7 +613,7 @@ export function App() {
       <div className="main-area">
         <header className="topbar">
           <div>
-            <span className="eyebrow">QUANTDESK PLATFORM</span>
+            <span className="eyebrow">YOUR PRIVATE TRADING SPACE</span>
             <h1>{navigation.find((item) => item.id === view)?.label}</h1>
           </div>
           <div className="topbar-actions">
@@ -649,15 +673,17 @@ export function App() {
 
           {view === 'overview' && (
             <>
-              <section className="welcome-card">
-                <div>
-                  <span className="eyebrow">TRADING SIMULATION WORKSPACE</span>
-                  <h2>{isAuthenticated ? `Welcome back, ${user?.displayName || user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
-                  <p>A professional workspace for virtual trading, portfolio accounting and competitive strategy simulation. Every number comes from your account.</p>
-                  <button type="button" className="button button-primary"
+              <section className="qd-hero" aria-label="Welcome to QuantDesk">
+                <div className="qd-hero__content">
+                  <span className="eyebrow qd-hero__eyebrow">INTELLIGENT TRADING, ELEVATED</span>
+                  <h2 className="qd-hero__title">{isAuthenticated ? `Welcome back, ${user?.pseudoPublic || user?.displayName || user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
+                  <p className="qd-hero__description">Build your strategies, explore market opportunities, and follow your virtual portfolio with confidence.</p>
+                  <button type="button" className="button button-primary qd-hero__button"
                     onClick={() => navigate(user?.isAdmin ? 'administration' : 'portfolio')}>{user?.isAdmin ? 'Open administration' : 'View my portfolio'}</button>
                 </div>
-                <div className="welcome-symbol" aria-hidden="true">Q</div>
+                <div className="qd-hero__art" aria-hidden="true">
+                  <img className="qd-hero__globe" src="/quantdesk-globe-gold.png" alt="" draggable={false} />
+                </div>
               </section>
               {accountPanel}
               {isAuthenticated && personalAccount && (
@@ -665,11 +691,11 @@ export function App() {
                   valuation={valuation} history={balanceHistory} trades={recentTrades}
                   loading={insightsStatus === 'loading'} error={insightsError} compact />
               )}
-              <div className="section-heading"><div><span className="eyebrow">PLATFORM</span><h2>Explore QuantDesk</h2></div><span className="muted">Module roadmap</span></div>
+              <div className="section-heading"><div><span className="eyebrow">PLATFORM</span><h2>Explore QuantDesk</h2></div><span className="muted">Explore what is coming next</span></div>
               <div className="workspace-grid">
                 {workspaces.map((workspace) => (
                   <article className="workspace-card" key={workspace.name}>
-                    <span className="planned-label">MODULE ROADMAP</span>
+                    <span className="planned-label">COMING SOON</span>
                     <h3>{workspace.name}</h3><p>{workspace.description}</p>
                   </article>
                 ))}
@@ -687,19 +713,19 @@ export function App() {
               )}
               <section className="modules-panel portfolio-positions" aria-label="Portfolio holdings">
                 <div className="section-heading">
-                  <div><span className="eyebrow">PORTFOLIO / STOCK HOLDINGS</span><h2>Positions & realized performance</h2></div>
-                  <span className="muted">Database-backed · long-only</span>
+                  <div><span className="eyebrow">YOUR HOLDINGS</span><h2>Portfolio positions</h2></div>
+                  <span className="muted">Your equity holdings</span>
                 </div>
-                <p className="muted">Cost basis and realized P&L come from settled executions. Indicative market value and unrealized P&L use recent QuantDesk trade prices, not live exchange quotes.</p>
+                <p className="muted">Explore the investments you own, their average purchase cost and how they have performed. Estimated values use recent trading activity, not live market quotes.</p>
                 {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
                 {isAuthenticated && user?.isPlayer && accountStatus === 'ready' && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
                 {isAuthenticated && accountStatus === 'forbidden' && <p className="muted">Portfolio access is unavailable until the Player role is active in this session.</p>}
-                {personalAccount && positionsStatus === 'loading' && <p role="status">Loading positions from PostgreSQL...</p>}
+                {personalAccount && positionsStatus === 'loading' && <p role="status">Loading your positions...</p>}
                 {personalAccount && positionsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {positionsError}</div>}
                 {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
                   <div className="portfolio-empty">
                     <strong>No stock positions yet</strong>
-                    <p>After M06 matches orders and the trusted settlement service records executions, real holdings will appear here. Test fixtures are never presented as player trades.</p>
+                    <p>Your holdings will appear here after your first completed stock trade.</p>
                   </div>
                 )}
                 {personalAccount && positionsStatus === 'ready' && positions.length > 0 && (
@@ -725,7 +751,7 @@ export function App() {
                 )}
               </section>
               <section className="modules-panel portfolio-journal" aria-label="Cash transaction journal">
-                <div className="section-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Cash journal</h2></div><span className="muted">Funding and settled trade movements</span></div>
+                <div className="section-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h2>Transaction history</h2></div><span className="muted">Deposits and completed trades</span></div>
                 {accountStatus === 'ready' && !personalAccount && <p className="muted">Your transaction journal becomes available once you have an account.</p>}
                 {personalAccount && journalStatus === 'loading' && <p role="status">Loading cash entries...</p>}
                 {personalAccount && journalStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load journal: {journalError}</div>}
@@ -752,32 +778,64 @@ export function App() {
 
           {view === 'profile' && (
             <>
-              <section className="identity-panel">
-                <div>
-                  <span className="eyebrow">PLAYER PROFILE</span>
-                  <h2>{user?.username || 'Your QuantDesk identity'}</h2>
-                  <p>Your profile is derived from the authenticated Keycloak session. The account balance remains server-controlled.</p>
-                  {!isAuthenticated && <a className="button button-primary" href="/auth/login">Sign in to view profile</a>}
-                </div>
-                <div className="identity-details">
-                  <div><span>Session</span><strong>{sessionStatus}</strong></div>
-                  <div><span>Username</span><strong>{user?.username || 'Not signed in'}</strong></div>
-                  <div><span>Email</span><strong>{user?.email || 'Not provided'}</strong></div>
-                  <div><span>Internal user ID</span><code>{user?.quantDeskUserId || '—'}</code></div>
-                  <div><span>Application role</span><strong>{user?.role ? roleLabel(user.role) : '—'}</strong></div>
-                  <div><span>Account status</span><strong>{user?.status || '—'}</strong></div>
-                  <div><span>Public player name</span><strong>{user?.pseudoPublic || 'Not created'}</strong></div>
-                  <div><span>Real-time connection</span><strong>{liveStatus}</strong></div>
+              <section className="profile-hero" aria-label="Your profile">
+                <div className="profile-hero-avatar" aria-hidden="true">{(user?.displayName || user?.username || 'Q').slice(0, 1).toUpperCase()}</div>
+                <div className="profile-hero-content">
+                  <span className="eyebrow">YOUR IDENTITY</span>
+                  <h2>{user?.pseudoPublic || user?.displayName || user?.username || 'Your profile'}</h2>
+                  <p>Your space to manage your account and the name you share with other players.</p>
+                  {isAuthenticated && <div className="profile-badges">
+                    <span className="profile-badge gold">{user?.role ? roleLabel(user.role) : 'Member'}</span>
+                    <span className={`profile-badge ${user?.status === 'SUSPENDED' ? 'inactive' : 'active'}`}>
+                      {user?.status === 'SUSPENDED' ? 'Suspended' : 'Active account'}
+                    </span>
+                  </div>}
+                  {!isAuthenticated && <a className="button button-primary" href="/auth/login">Sign in to view your profile</a>}
                 </div>
               </section>
-              {user?.isPlayer && <section className="modules-panel"><PlayerProfileEditor pseudoPublic={user.pseudoPublic ?? null} onSaved={refresh} /></section>}
-              {latestNotification && isAuthenticated && (
-                <section className="identity-panel" aria-label="Most recent notification">
-                  <div><span className="eyebrow">NOTIFICATIONS</span><h2>Latest update</h2></div>
-                  <div className="identity-details"><p role="status">{latestNotification}</p></div>
-                </section>
-              )}
-              {isAuthenticated && user?.isPlayer && accountPanel}
+              {isAuthenticated && <section className="modules-panel profile-summary-card" aria-label="Personal information">
+                <div className="profile-summary-header">
+                  <div>
+                    <span className="eyebrow">ACCOUNT DETAILS</span>
+                    <h2>Personal information</h2>
+                    <p>Your membership and public identity, in one place.</p>
+                  </div>
+                  {user?.isPlayer && <button type="button"
+                    className="button button-secondary profile-edit-toggle"
+                    aria-expanded={editingProfile} aria-controls={editingProfile ? 'profile-nickname-editor' : undefined}
+                    onClick={() => setEditingProfile(value => !value)}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m15 5 4 4M4 20l4.4-1 11-11a2.1 2.1 0 0 0-3-3l-11 11L4 20Z" />
+                    </svg>
+                    {editingProfile ? 'Close editor' : 'Edit nickname'}
+                  </button>}
+                </div>
+                <div className="profile-information-grid">
+                  <div className="profile-info-item"><span>Username</span><strong>{user?.username || 'Not available'}</strong></div>
+                  <div className="profile-info-item"><span>Email address</span><strong>{user?.email || 'Not provided'}</strong></div>
+                  <div className="profile-info-item"><span>Membership</span><strong>{user?.role ? roleLabel(user.role) : 'Not available'}</strong></div>
+                  <div className="profile-info-item"><span>Public nickname</span><strong>{user?.pseudoPublic || 'Not set yet'}</strong></div>
+                </div>
+                {user?.isPlayer && editingProfile && <div className="profile-inline-editor" id="profile-nickname-editor">
+                  <h3>Update your public nickname</h3>
+                  <p>Your nickname is visible to other players. You can change it here.</p>
+                  <PlayerProfileEditor pseudoPublic={user.pseudoPublic ?? null}
+                    onSaved={() => { setEditingProfile(false); refresh() }} />
+                </div>}
+                <button type="button" className="profile-advanced-toggle" aria-expanded={showAdvancedProfile}
+                  onClick={() => setShowAdvancedProfile(value => !value)}>
+                  {showAdvancedProfile ? 'Hide technical details' : 'Show account details'}
+                </button>
+                {showAdvancedProfile && <div className="profile-information-grid profile-advanced-details">
+                  <div className="profile-info-item"><span>Account ID</span><code>{user?.quantDeskUserId || 'Not available'}</code></div>
+                  <div className="profile-info-item"><span>Connection</span><strong>{liveStatus}</strong></div>
+                </div>}
+              </section>}
+              {latestNotification && isAuthenticated && <section className="modules-panel profile-notification-card" aria-label="Latest update">
+                <div className="section-heading"><div><span className="eyebrow">ACTIVITY</span><h2>Latest update</h2></div></div>
+                <p role="status">{latestNotification}</p>
+              </section>}
             </>
           )}
 
@@ -790,10 +848,10 @@ export function App() {
           {view === 'modules' && (
             <section className="modules-panel">
               <div className="section-heading">
-                <div><span className="eyebrow">PLATFORM REGISTRY</span><h2>Registered modules</h2></div>
+                <div><span className="eyebrow">PLATFORM FEATURES</span><h2>Explore modules</h2></div>
                 <span className="muted">{modules.length} modules</span>
               </div>
-              <p className="muted">This registry is loaded from the API. Registration does not imply that a module is ready for trading.</p>
+              <p className="muted">Explore the tools and workspaces available across QuantDesk. Some features are still in development.</p>
               {modulesLoading && <p role="status">Loading modules...</p>}
               {modulesError && <div className="alert alert-error" role="alert">{modulesError}</div>}
               {!modulesLoading && !modulesError && modules.length === 0 && <p>No registered modules yet.</p>}

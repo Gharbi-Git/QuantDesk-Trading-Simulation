@@ -22,7 +22,7 @@ export function PlayerProfileEditor({ pseudoPublic, onSaved }: { pseudoPublic: s
         const payload = await response.json().catch(() => ({})) as { error?: string }
         throw new Error(payload.error ?? `Unable to update profile (${response.status})`)
       }
-      setMessage('Public player name updated.')
+      setMessage('Your public nickname has been saved.')
       onSaved()
     } catch (error: unknown) { setMessage(String(error)) }
     finally { setBusy(false) }
@@ -30,10 +30,11 @@ export function PlayerProfileEditor({ pseudoPublic, onSaved }: { pseudoPublic: s
 
   return (
     <form className="profile-edit" onSubmit={(e: FormEvent) => void submit(e)}>
-      <label htmlFor="public-pseudo">Public player name</label>
+      <label htmlFor="public-pseudo">Public nickname</label>
       <input id="public-pseudo" value={value} maxLength={32} required minLength={3}
         pattern="[A-Za-z0-9_.-]{3,32}" onChange={(e: ChangeEvent<HTMLInputElement>) => setValue(e.target.value)} />
-      <button type="submit" className="button button-secondary" disabled={busy}>Save profile</button>
+      <p className="profile-input-help">Choose 3 to 32 characters: letters, numbers, underscores, periods or hyphens.</p>
+      <button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Saving...' : 'Save changes'}</button>
       {message && <p role="status">{message}</p>}
     </form>
   )
