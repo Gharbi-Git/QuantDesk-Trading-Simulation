@@ -7,6 +7,14 @@ namespace QuantDesk.Modules.Administration.Infrastructure.Services;
 
 public sealed record IdentitySession(long AuthVersion, UserStatus Status, string DisplayName);
 
+public enum IdentitySessionState { Current, Expired, Suspended }
+
+public sealed class SuspendedAccountException : InvalidOperationException
+{
+    public SuspendedAccountException()
+        : base("This account is suspended. Contact a QuantDesk administrator.") { }
+}
+
 /// <summary>
 /// Local identity state is NOT a replacement for Keycloak. All roles come from validated OIDC claims.
 /// Status and version are checked on every authenticated HTTP/WebSocket handshake.
@@ -18,7 +26,7 @@ public sealed class UserIdentityLifecycleService(QuantDeskDbContext db)
     {
         var user = await db.Utilisateurs.SingleAsync(x => x.Id == userId, ct);
         if (user.Status == UserStatus.Suspended)
-            throw new InvalidOperationException("This account is suspended. Contact a QuantDesk administrator.");
+            throw new SuspendedAccountException();
 
         var suggested = (displayName ?? "").Trim();
         if (suggested.Length == 0) suggested = user.Username;
@@ -51,14 +59,21 @@ public sealed class UserIdentityLifecycleService(QuantDeskDbContext db)
         return new IdentitySession(user.AuthVersion, user.Status, user.DisplayName);
     }
 
-    public async Task<bool> IsSessionCurrentAsync(Guid userId, long version, CancellationToken ct)
+    public async Task<IdentitySessionState> GetSessionStateAsync(Guid userId, long version, CancellationToken ct)
     {
         var current = await db.Utilisateurs.AsNoTracking()
             .Where(u => u.Id == userId)
             .Select(u => new { u.Status, u.AuthVersion })
             .SingleOrDefaultAsync(ct);
-        return current is { Status: UserStatus.Active } && current.AuthVersion == version;
+        if (current is null) return IdentitySessionState.Expired;
+        if (current.Status == UserStatus.Suspended) return IdentitySessionState.Suspended;
+        return current.AuthVersion == version
+            ? IdentitySessionState.Current
+            : IdentitySessionState.Expired;
     }
+
+    public async Task<bool> IsSessionCurrentAsync(Guid userId, long version, CancellationToken ct) =>
+        await GetSessionStateAsync(userId, version, ct) == IdentitySessionState.Current;
 
     public async Task<bool> RenamePublicProfileAsync(Guid userId, string nickname, CancellationToken ct)
     {

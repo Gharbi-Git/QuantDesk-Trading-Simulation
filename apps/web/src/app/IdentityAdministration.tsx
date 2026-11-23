@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ChangeEvent } from 'react'
+import { roleLabel } from './roleLabels'
 
 type ManagedUser = { id: string; username: string; displayName: string; role: string; status: string; createdAtUtc: string }
 type Props = { currentUserId: string; isSuperuser: boolean }
@@ -41,7 +42,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
   }, [revision, search])
 
   async function update(id: string, kind: 'grant' | 'revoke' | 'activate' | 'suspend') {
-    const verb = kind === 'grant' ? 'grant ADMIN to' : kind === 'revoke' ? 'revoke ADMIN from' : kind === 'suspend' ? 'suspend' : 'reactivate'
+    const verb = kind === 'grant' ? 'assign the Session Organizer role to' : kind === 'revoke' ? 'remove the Session Organizer role from' : kind === 'suspend' ? 'suspend' : 'reactivate'
     if (!window.confirm(`Are you sure you want to ${verb} this user?`)) return
     setBusy(id); setError(''); setNotice('')
     try {
@@ -71,7 +72,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
         <div><span className="eyebrow">IDENTITY & ACCESS</span><h2>Manage users</h2></div>
         <span className="muted">Keycloak roles · PostgreSQL user status</span>
       </div>
-      <p className="muted">All registered users start as PLAYER. Only SUPERUSER can assign ADMIN. Administrators can suspend or reactivate ordinary player accounts.</p>
+      <p className="muted">All registered users start as Players. Only an Admin can assign the Session Organizer role. Admins and Session Organizers can suspend or reactivate ordinary Player accounts.</p>
       <label className="account-select-field">
         <span>SEARCH USERS</span>
         <input type="search" value={search} placeholder="Username or display name" maxLength={100}
@@ -87,7 +88,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
           <tbody>{users.map((u) => (
             <tr key={u.id}>
               <td><strong>{u.displayName || u.username}</strong><div className="muted">@{u.username}</div></td>
-              <td><strong>{u.role}</strong></td>
+              <td><strong>{roleLabel(u.role)}</strong></td>
               <td>{u.status}</td>
               <td>
                 {u.id !== currentUserId && u.role === 'PLAYER' && (
@@ -98,11 +99,11 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
                 )}
                 {isSuperuser && u.id !== currentUserId && u.status === 'ACTIVE' && u.role === 'PLAYER' && (
                   <button className="button button-primary" type="button" disabled={busy === u.id}
-                    onClick={() => void update(u.id, 'grant')}>Make ADMIN</button>
+                    onClick={() => void update(u.id, 'grant')}>Make Session Organizer</button>
                 )}
                 {isSuperuser && u.id !== currentUserId && u.role === 'ADMIN' && (
                   <button className="button button-secondary" type="button" disabled={busy === u.id}
-                    onClick={() => void update(u.id, 'revoke')}>Remove ADMIN</button>
+                    onClick={() => void update(u.id, 'revoke')}>Remove Session Organizer</button>
                 )}
                 {(u.id === currentUserId || u.role === 'SUPERUSER') && <span className="muted">Protected</span>}
               </td>

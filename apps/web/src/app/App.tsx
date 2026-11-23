@@ -6,6 +6,7 @@ import { productName } from './config'
 import { PortfolioInsights } from './PortfolioInsights'
 import { IdentityAdministration } from './IdentityAdministration'
 import { PlayerProfileEditor } from './PlayerProfileEditor'
+import { roleLabel } from './roleLabels'
 import type { PortfolioValuation, BalanceHistory, SettledTrade } from './PortfolioInsights'
 
 type Module = {
@@ -57,7 +58,7 @@ type CashJournalRow = {
 type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
 type AccountStatus = 'idle' | 'loading' | 'ready' | 'error' | 'forbidden'
 type View = 'overview' | 'portfolio' | 'profile' | 'modules' | 'administration'
-type LiveStatus = 'Offline' | 'Connecting' | 'Connected' | 'Reconnecting' | 'Connection failed' | 'Access limited' | 'Admin mode'
+type LiveStatus = 'Offline' | 'Connecting' | 'Connected' | 'Reconnecting' | 'Connection failed' | 'Access limited' | 'Administration mode'
 
 const navigation: { id: View; label: string; symbol: string }[] = [
   { id: 'overview', label: 'Overview', symbol: '◫' },
@@ -116,6 +117,9 @@ export function App() {
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('loading')
   const [user, setUser] = useState<User | null>(null)
   const [sessionError, setSessionError] = useState('')
+  const [suspendedNotice, setSuspendedNotice] = useState(
+    () => new URLSearchParams(window.location.search).get('authNotice') === 'suspended',
+  )
   const [actionError, setActionError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
 
@@ -158,6 +162,19 @@ export function App() {
     })
       .then(async (response) => {
         if (response.status === 401) {
+          // A revoked session is still unauthenticated. Ask the API whether to show
+          // a short-lived suspension notice instead of the generic guest message.
+          try {
+            const noticeResponse = await fetch('/api/auth/session-notice', {
+              credentials: 'same-origin', signal: controller.signal,
+            })
+            if (noticeResponse.ok) {
+              const notice = (await noticeResponse.json()) as { suspended?: boolean }
+              if (!controller.signal.aborted && notice.suspended) setSuspendedNotice(true)
+            }
+          } catch {
+            // The notice is informational; never restore access on fetch failure.
+          }
           if (!controller.signal.aborted) {
             setUser(null)
             setSessionStatus('anonymous')
@@ -171,6 +188,7 @@ export function App() {
         }
         if (!controller.signal.aborted) {
           setUser(identity)
+          setSuspendedNotice(false)
           setSessionStatus('authenticated')
         }
       })
@@ -217,7 +235,7 @@ export function App() {
     if (!user.isPlayer) {
       setAccounts([])
       setAccountStatus('forbidden')
-      setAccountError(user?.isAdmin ? 'Administrator identities use the Administration workspace; only PLAYER users own trading accounts.' : 'Your account needs PLAYER permission. Please sign out and contact support if it persists.')
+      setAccountError(user?.isAdmin ? 'Admin and Session Organizer accounts use the Administration workspace; only Players own trading accounts.' : 'Your account needs the Player role. Please sign out and contact support if it persists.')
       return
     }
 
@@ -228,7 +246,7 @@ export function App() {
     void fetch('/api/accounts', { credentials: 'same-origin', signal: controller.signal })
       .then(async (response) => {
         if (response.status === 403) {
-          throw new Error('PLAYER permission denied (HTTP 403). Sign out and sign back in to refresh Keycloak roles.')
+          throw new Error('Player permission denied (HTTP 403). Sign out and sign back in to refresh Keycloak roles.')
         }
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const data: unknown = await response.json()
@@ -374,7 +392,7 @@ export function App() {
     }
     if (!user?.isPlayer) {
       // Not a network outage: the hub explicitly requires PLAYER authorization.
-      setLiveStatus(user?.isAdmin ? 'Admin mode' : 'Access limited')
+      setLiveStatus(user?.isAdmin ? 'Administration mode' : 'Access limited')
       return
     }
 
@@ -588,7 +606,7 @@ export function App() {
             {isAuthenticated ? (
               <div className="user-menu">
                 <div className="avatar" aria-hidden="true">{(user?.username || 'U')[0].toUpperCase()}</div>
-                <div className="user-details"><strong>{user?.displayName || user?.username || 'Player'}</strong><small>{user?.role || 'Signed in'} · {user?.status || 'ACTIVE'}</small></div>
+                <div className="user-details"><strong>{user?.displayName || user?.username || 'Player'}</strong><small>{user?.role ? roleLabel(user.role) : 'Signed in'} · {user?.status || 'ACTIVE'}</small></div>
                 <button type="button" className="button button-secondary"
                   onClick={() => void logout()} disabled={signingOut}>
                   {signingOut ? 'Signing out...' : 'Sign out'}
@@ -596,6 +614,13 @@ export function App() {
               </div>
             ) : sessionStatus === 'loading' ? (
               <span className="muted">Checking session...</span>
+            ) : suspendedNotice ? (
+              <div className="auth-actions">
+                <button type="button" className="button button-secondary"
+                  onClick={() => void logout()} disabled={signingOut}>
+                  {signingOut ? 'Signing out...' : 'Sign out / Switch account'}
+                </button>
+              </div>
             ) : (
               <div className="auth-actions">
                 <a className="button button-secondary" href="/auth/login">Sign in</a>
@@ -611,7 +636,14 @@ export function App() {
             <div className="alert alert-error" role="alert">Authentication API unavailable: {sessionError}</div>
           )}
           {sessionStatus === 'loading' && <div className="alert" role="status">Checking your session...</div>}
-          {sessionStatus === 'anonymous' && (
+          {sessionStatus === 'anonymous' && suspendedNotice && (
+            <div className="alert alert-error" role="alert">
+              <strong>Account suspended.</strong> Your QuantDesk account has been suspended by an administrator.
+              Contact an administrator for reactivation. To use a different account, select Sign out / Switch account.
+              Keycloak may ask you to confirm sign-out before you can sign in again.
+            </div>
+          )}
+          {sessionStatus === 'anonymous' && !suspendedNotice && (
             <div className="alert">You're browsing as a guest. Sign in to access your virtual accounts and portfolio.</div>
           )}
 
@@ -661,7 +693,7 @@ export function App() {
                 <p className="muted">Cost basis and realized P&L come from settled executions. Indicative market value and unrealized P&L use recent QuantDesk trade prices, not live exchange quotes.</p>
                 {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
                 {isAuthenticated && user?.isPlayer && accountStatus === 'ready' && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
-                {isAuthenticated && accountStatus === 'forbidden' && <p className="muted">Portfolio access is unavailable until the PLAYER role is active in this session.</p>}
+                {isAuthenticated && accountStatus === 'forbidden' && <p className="muted">Portfolio access is unavailable until the Player role is active in this session.</p>}
                 {personalAccount && positionsStatus === 'loading' && <p role="status">Loading positions from PostgreSQL...</p>}
                 {personalAccount && positionsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {positionsError}</div>}
                 {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
@@ -732,7 +764,7 @@ export function App() {
                   <div><span>Username</span><strong>{user?.username || 'Not signed in'}</strong></div>
                   <div><span>Email</span><strong>{user?.email || 'Not provided'}</strong></div>
                   <div><span>Internal user ID</span><code>{user?.quantDeskUserId || '—'}</code></div>
-                  <div><span>Application role</span><strong>{user?.role || '—'}</strong></div>
+                  <div><span>Application role</span><strong>{user?.role ? roleLabel(user.role) : '—'}</strong></div>
                   <div><span>Account status</span><strong>{user?.status || '—'}</strong></div>
                   <div><span>Public player name</span><strong>{user?.pseudoPublic || 'Not created'}</strong></div>
                   <div><span>Real-time connection</span><strong>{liveStatus}</strong></div>
@@ -752,7 +784,7 @@ export function App() {
           {view === 'administration' && (
             user?.isAdmin && user.quantDeskUserId
               ? <IdentityAdministration currentUserId={user.quantDeskUserId} isSuperuser={user.isSuperuser} />
-              : <div className="alert alert-error">You need ADMIN or SUPERUSER permissions to access administration.</div>
+              : <div className="alert alert-error">You need Admin or Session Organizer permissions to access administration.</div>
           )}
 
           {view === 'modules' && (

@@ -39,6 +39,8 @@ public sealed class IdentityLifecycleTests
             var session = await service.CompleteLoginAsync(id, "Player Test", "player_probe", true, CancellationToken.None);
             Assert.Equal(UserStatus.Active, session.Status);
             Assert.True(await service.IsSessionCurrentAsync(id, session.AuthVersion, CancellationToken.None));
+            Assert.Equal(IdentitySessionState.Current,
+                await service.GetSessionStateAsync(id, session.AuthVersion, CancellationToken.None));
             Assert.Single(await db.ProfilsJoueurs.Where(x => x.UtilisateurId == id).ToListAsync());
             // Repeat login must re-use the same optional profile.
             await service.CompleteLoginAsync(id, "Player Test", "player_probe", true, CancellationToken.None);
@@ -48,10 +50,17 @@ public sealed class IdentityLifecycleTests
             user.Suspendre();
             await db.SaveChangesAsync();
             Assert.False(await service.IsSessionCurrentAsync(id, session.AuthVersion, CancellationToken.None));
-            await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteLoginAsync(id, null, null, true, CancellationToken.None));
+            Assert.Equal(IdentitySessionState.Suspended,
+                await service.GetSessionStateAsync(id, session.AuthVersion, CancellationToken.None));
+            await Assert.ThrowsAsync<SuspendedAccountException>(() =>
+                service.CompleteLoginAsync(id, null, null, true, CancellationToken.None));
             user.Activer();
             await db.SaveChangesAsync();
             Assert.False(await service.IsSessionCurrentAsync(id, session.AuthVersion, CancellationToken.None));
+            Assert.Equal(IdentitySessionState.Expired,
+                await service.GetSessionStateAsync(id, session.AuthVersion, CancellationToken.None));
+            var freshSession = await service.CompleteLoginAsync(id, null, null, true, CancellationToken.None);
+            Assert.True(await service.IsSessionCurrentAsync(id, freshSession.AuthVersion, CancellationToken.None));
         }
         finally
         {

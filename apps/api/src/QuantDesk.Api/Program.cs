@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -116,8 +117,12 @@ builder.Services
                 return;
             }
             var lifecycle = context.HttpContext.RequestServices.GetRequiredService<UserIdentityLifecycleService>();
-            if (!await lifecycle.IsSessionCurrentAsync(id, version, context.HttpContext.RequestAborted))
+            var sessionState = await lifecycle.GetSessionStateAsync(
+                id, version, context.HttpContext.RequestAborted);
+            if (sessionState != IdentitySessionState.Current)
             {
+                if (sessionState == IdentitySessionState.Suspended)
+                    SessionNotice.SetSuspended(context.HttpContext, !builder.Environment.IsDevelopment());
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             }
@@ -192,8 +197,13 @@ builder.Services
             if (context.Properties.Items.TryGetValue("quantdesk:register", out var requested)
                 && requested == "true")
             {
-                // OIDC prompt=create is supported by modern Keycloak registration flows.
                 context.ProtocolMessage.Prompt = "create";
+            }
+            else if (context.Properties.Items.TryGetValue("quantdesk:force-login", out var forceLogin)
+                     && forceLogin == "true")
+            {
+                // Do not silently reuse a suspended user's existing Keycloak SSO session.
+                context.ProtocolMessage.Prompt = "login";
             }
             return Task.CompletedTask;
         };
@@ -347,14 +357,17 @@ options.Events.OnRedirectToIdentityProviderForSignOut = context =>
                     utilisateurId, context.Principal.FindFirst("name")?.Value,
                     username, role == QuantDeskRoles.Player, context.HttpContext.RequestAborted);
             }
-            catch (InvalidOperationException)
+            catch (SuspendedAccountException)
             {
-                // Never issue an authenticated app session for a suspended user.
-                context.Fail("This QuantDesk identity is not permitted to sign in.");
+                // No application session is issued. Return to the UI instead of an OIDC error page.
+                context.HandleResponse();
+                context.HttpContext.Response.Redirect(
+                    QueryHelpers.AddQueryString(frontendReturnUrl, "authNotice", "suspended"));
                 return;
             }
             identity.AddClaim(new Claim("quantdesk_auth_version",
                 state.AuthVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            SessionNotice.Clear(context.HttpContext);
         };
     });
 
@@ -416,7 +429,8 @@ app.MapGet("/auth/login", () =>
     Results.Challenge(
         new AuthenticationProperties
         {
-           RedirectUri = frontendReturnUrl
+            RedirectUri = frontendReturnUrl,
+            Items = { ["quantdesk:force-login"] = "true" }
         },
         new[]
         {
@@ -434,6 +448,16 @@ app.MapGet("/auth/register", () =>
             Items = { ["quantdesk:register"] = "true" }
         },
         new[] { OpenIdConnectDefaults.AuthenticationScheme }));
+
+// This anonymous endpoint exposes only a short-lived UI notice, never account identity.
+app.MapGet("/api/auth/session-notice", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(new
+    {
+        suspended = context.Request.Cookies[SessionNotice.CookieName] == "suspended"
+    });
+}).AllowAnonymous();
 
 // Current session: role is derived from Keycloak, account/profile/status from PostgreSQL.
 app.MapGet("/api/me", async (ClaimsPrincipal user, QuantDeskDbContext db, CancellationToken ct) =>
@@ -476,11 +500,12 @@ app.MapGet("/api/auth/csrf",
             csrfToken = tokens.RequestToken
         });
     })
-    .RequireAuthorization();
+    .AllowAnonymous();
 
 
 // End the local session and initiate Keycloak logout.
-// Require a valid CSRF token before signing out.
+// This route must remain available after a suspended cookie is rejected.
+// CSRF protection is required even for anonymous callers.
 app.MapPost("/auth/logout",
     async (HttpContext context, IAntiforgery antiforgery) =>
     {
@@ -491,6 +516,10 @@ app.MapPost("/auth/logout",
                 error = "Invalid or missing CSRF token."
             });
         }
+
+        // A suspended local session may already be invalid. Clear any stale notice
+        // and end the Keycloak browser session so the next login can switch users.
+        SessionNotice.Clear(context);
 
         return Results.SignOut(
             new AuthenticationProperties
@@ -503,7 +532,7 @@ app.MapPost("/auth/logout",
                 OpenIdConnectDefaults.AuthenticationScheme
             });
     })
-    .RequireAuthorization();
+    .AllowAnonymous();
 
 // -------------------------------------------------------
 // Temporary authorization test endpoints
@@ -767,3 +796,23 @@ app.MapIdentityAdministration();
 app.Run();
 
 public partial class Program { }
+
+internal static class SessionNotice
+{
+    internal const string CookieName = "QuantDesk.SessionNotice";
+
+    internal static void SetSuspended(HttpContext context, bool secure)
+    {
+        context.Response.Cookies.Append(CookieName, "suspended", new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = secure,
+            Path = "/",
+            MaxAge = TimeSpan.FromMinutes(5)
+        });
+    }
+
+    internal static void Clear(HttpContext context) =>
+        context.Response.Cookies.Delete(CookieName, new CookieOptions { Path = "/" });
+}
