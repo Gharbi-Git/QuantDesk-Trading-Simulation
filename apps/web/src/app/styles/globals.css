@@ -439,3 +439,81 @@ p { line-height: 1.65; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* QD-192 / QD-193 / QD-198 — Financial cockpit, November 2026 */
+.account-select-field { display: grid; max-width: 340px; gap: 8px; margin-top: 20px; }
+.account-select-field span { color: var(--text-soft); font-size: 10px; font-weight: 760; letter-spacing: .13em; }
+.account-select-field select {
+  width: 100%; min-height: 42px; padding: 9px 13px; border-radius: 10px;
+  border: 1px solid #395365; background: #0e202d; color: #e0f8ef;
+  font-size: 12px; font-weight: 630;
+}
+.connection-control { display: flex; align-items: center; gap: 7px; white-space: nowrap; font-size: 11px; color: #a8bfd2; }
+.connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #8b96a2; }
+.connection-dot.on { background: #51dba4; box-shadow: 0 0 0 3px rgba(81,219,164,.12); }
+.connection-retry { color: #85e3ba; background: transparent; border: 0; text-decoration: underline; font-size: 11px; padding: 3px; }
+.identity-panel[aria-label="Selected trading account"] {
+  background: radial-gradient(ellipse at 7% 0%, rgba(105,228,174,.095), transparent 43%), linear-gradient(145deg, #152738, #111d2b);
+  border-color: #2e4c54;
+}
+.identity-panel[aria-label="Selected trading account"] .eyebrow { color: #78e8b9; }
+.identity-panel[aria-label="Selected trading account"] .identity-details > div:first-child:has(strong) {
+  align-items: center; padding: 3px 0 20px; margin-bottom: 3px; border-bottom-color: #395451;
+}
+.identity-panel[aria-label="Selected trading account"] .identity-details > div:first-child strong {
+  color: #91f4c3; font-size: clamp(23px, 2.6vw, 33px); font-weight: 800; letter-spacing: -.05em;
+  font-variant-numeric: tabular-nums;
+}
+.insights-dashboard { margin-top: 25px; }
+.insights-header, .insights-card-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.insights-header { margin-bottom: 17px; }
+.insights-header h2 { font-size: clamp(20px, 2vw, 24px); margin: 6px 0 0; }
+.insights-source { color: #88b7a9; font-size: 11px; }
+.insights-source span { color: #6ce0ab; font-size: 8px; vertical-align: 1px; margin-right: 5px; }
+.insights-kpis { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 13px; }
+.insights-kpi {
+  position: relative; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 12px;
+  border: 1px solid #2c4556; background: linear-gradient(150deg,#182a39,#111f2e);
+  padding: 21px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,.085);
+}
+.insights-kpi::before { content: ''; position: absolute; top: 0; left: 20px; right: 20px; height: 2px; background: linear-gradient(90deg,rgba(105,228,174,.8), transparent); }
+.insights-kpi-label { color: #9fb3c2; font-size: 11px; font-weight: 700; }
+.insights-kpi strong { color: #effdf9; font-size: clamp(17px, 2vw, 27px); font-weight: 790; letter-spacing: -.05em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.insights-kpi small { color: #869cae; font-size: 10px; line-height: 1.5; }
+.insights-disclosure { max-width: 1100px; margin: 11px 0 0; font-size: 11px; color: #899fb2; }
+.insights-disclosure strong { color: #bed9ce; }
+.insights-missing { color: #ffc99e; border-left: 2px solid #e5a66e; padding-left: 12px; font-size: 12px; }
+.insights-details-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: 16px; margin-top: 21px; }
+.insights-detail-card { min-width: 0; border: 1px solid #2a4255; border-radius: 16px; background: linear-gradient(150deg,#142433,#101b29); padding: clamp(17px,2vw,27px); }
+.insights-card-title { margin-bottom: 21px; }
+.insights-card-title h3 { font-size: 17px; margin: 7px 0 0; }
+.insights-card-title .muted { font-size: 10px; }
+.insights-line-chart { display: block; width: 100%; overflow: visible; }
+.insights-grid-line { stroke: #2f4758; stroke-width: 1; stroke-dasharray: 4 7; }
+.insights-chart-axis { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; color: #8296a8; font-size: 10px; }
+.insights-chart-empty { min-height: 225px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; gap: 12px; border: 1px dashed rgba(127,168,182,.23); border-radius: 12px; padding: 20px; background: rgba(9,23,34,.25); }
+.insights-empty-icon { width: 43px; height: 43px; display: grid; place-items: center; background: rgba(105,228,174,.09); color: #92e8c5; border-radius: 12px; font-size: 23px; }
+.insights-chart-empty strong { color: #e3f5ee; font-size: 14px; }
+.insights-chart-empty p { font-size: 11px; color: #8fa7b9; max-width: 280px; margin: 0; }
+.insights-reconcile { margin-top: 16px; font-size: 11px; font-weight: 660; }
+.insights-reconcile.passed { color: #8be5b8; }
+.insights-reconcile.failed { color: #ffb0a2; }
+.insights-trade-scroll { max-height: 300px; overflow: auto; }
+.insights-trade-table { min-width: 0; }
+.insights-trade-table th, .insights-trade-table td { padding: 12px 8px; }
+.insights-trade-table td:first-child { text-align: left; }
+.insights-trade-table td:first-child small { display: block; color: #839aac; margin-top: 5px; font-size: 10px; }
+.insights-side { padding: 5px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; letter-spacing: .05em; }
+.insights-side.buy { background: rgba(65,214,161,.12); color: #8ff4c7; }
+.insights-side.sell { background: rgba(245,177,109,.10); color: #f8c794; }
+.trade-empty { min-height: 225px; }
+@media (max-width: 1260px) { .insights-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 1060px) { .insights-details-grid { grid-template-columns: 1fr; } }
+@media (max-width: 580px) {
+  .insights-kpis { grid-template-columns: 1fr 1fr; gap: 9px; }
+  .insights-kpi { padding: 14px; }
+  .insights-kpi strong { font-size: 17px; }
+  .insights-source { width: 100%; }
+  .connection-control { order: 3; width: 100%; }
+}
+@media (max-width: 390px) { .insights-kpis { grid-template-columns: 1fr; } }

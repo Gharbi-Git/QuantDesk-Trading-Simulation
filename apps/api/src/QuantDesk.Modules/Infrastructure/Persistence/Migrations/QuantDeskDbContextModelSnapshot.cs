@@ -22,7 +22,7 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("QuantDesk.Modules.Administration.Domain.Entities.Utilisateur", b =>
+            modelBuilder.Entity("QuantDesk.Modules.Administration.Domain.Entities.ProfilJoueur", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -32,6 +32,50 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
+
+                    b.Property<string>("PseudoPublic")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("pseudo_public");
+
+                    b.Property<Guid>("UtilisateurId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("utilisateur_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UtilisateurId")
+                        .IsUnique();
+
+                    b.ToTable("profils_joueurs", (string)null);
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Administration.Domain.Entities.Utilisateur", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AuthVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("auth_version");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasDefaultValue("")
+                        .HasColumnName("display_name");
 
                     b.Property<string>("Email")
                         .HasMaxLength(320)
@@ -44,6 +88,14 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("keycloak_subject");
 
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Active")
+                        .HasColumnName("status");
+
                     b.Property<string>("Username")
                         .IsRequired()
                         .HasMaxLength(150)
@@ -55,7 +107,10 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                     b.HasIndex("KeycloakSubject")
                         .IsUnique();
 
-                    b.ToTable("utilisateurs", (string)null);
+                    b.ToTable("utilisateurs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_utilisateurs_status", "status IN ('Active', 'Suspended')");
+                        });
                 });
 
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CashJournalEntry", b =>
@@ -253,6 +308,15 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_positions_action_quantity_nonnegative", "quantity >= 0");
                         });
+                });
+
+            modelBuilder.Entity("QuantDesk.Modules.Administration.Domain.Entities.ProfilJoueur", b =>
+                {
+                    b.HasOne("QuantDesk.Modules.Administration.Domain.Entities.Utilisateur", null)
+                        .WithOne()
+                        .HasForeignKey("QuantDesk.Modules.Administration.Domain.Entities.ProfilJoueur", "UtilisateurId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.CashJournalEntry", b =>

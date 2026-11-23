@@ -1,8 +1,11 @@
+import './styles/identity-upgrade.css'
 import { useEffect, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { HubConnectionBuilder } from '@microsoft/signalr'
 import { productName } from './config'
 import { PortfolioInsights } from './PortfolioInsights'
+import { IdentityAdministration } from './IdentityAdministration'
+import { PlayerProfileEditor } from './PlayerProfileEditor'
 import type { PortfolioValuation, BalanceHistory, SettledTrade } from './PortfolioInsights'
 
 type Module = {
@@ -16,6 +19,13 @@ type User = {
   username: string | null
   email: string | null
   quantDeskUserId: string | null
+  isPlayer: boolean
+  isAdmin: boolean
+  isSuperuser: boolean
+  role: 'PLAYER' | 'ADMIN' | 'SUPERUSER' | 'NONE'
+  displayName?: string | null
+  status?: string
+  pseudoPublic?: string | null
 }
 
 type TradingAccount = {
@@ -45,15 +55,16 @@ type CashJournalRow = {
 }
 
 type SessionStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
-type AccountStatus = 'idle' | 'loading' | 'ready' | 'error'
-type View = 'overview' | 'portfolio' | 'profile' | 'modules'
-type LiveStatus = 'Offline' | 'Connecting' | 'Connected' | 'Reconnecting' | 'Connection failed'
+type AccountStatus = 'idle' | 'loading' | 'ready' | 'error' | 'forbidden'
+type View = 'overview' | 'portfolio' | 'profile' | 'modules' | 'administration'
+type LiveStatus = 'Offline' | 'Connecting' | 'Connected' | 'Reconnecting' | 'Connection failed' | 'Access limited' | 'Admin mode'
 
 const navigation: { id: View; label: string; symbol: string }[] = [
   { id: 'overview', label: 'Overview', symbol: '◫' },
   { id: 'portfolio', label: 'My portfolio', symbol: '▤' },
   { id: 'profile', label: 'My profile', symbol: '◉' },
   { id: 'modules', label: 'Modules', symbol: '▦' },
+  { id: 'administration', label: 'Administration', symbol: '⚙' },
 ]
 
 const workspaces = [
@@ -203,6 +214,12 @@ export function App() {
       setAccountStatus('idle')
       return
     }
+    if (!user.isPlayer) {
+      setAccounts([])
+      setAccountStatus('forbidden')
+      setAccountError(user?.isAdmin ? 'Administrator identities use the Administration workspace; only PLAYER users own trading accounts.' : 'Your account needs PLAYER permission. Please sign out and contact support if it persists.')
+      return
+    }
 
     const controller = new AbortController()
     setAccountStatus('loading')
@@ -210,6 +227,9 @@ export function App() {
 
     void fetch('/api/accounts', { credentials: 'same-origin', signal: controller.signal })
       .then(async (response) => {
+        if (response.status === 403) {
+          throw new Error('PLAYER permission denied (HTTP 403). Sign out and sign back in to refresh Keycloak roles.')
+        }
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const data: unknown = await response.json()
         if (!Array.isArray(data)) throw new Error('Invalid accounts response')
@@ -223,13 +243,15 @@ export function App() {
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
-          setAccountError(String(error))
-          setAccountStatus('error')
+          const message = String(error)
+          if (message.includes('HTTP 403')) setAccounts([])
+          setAccountError(message)
+          setAccountStatus(message.includes('HTTP 403') ? 'forbidden' : 'error')
         }
       })
 
     return () => controller.abort()
-  }, [sessionStatus, user?.quantDeskUserId, refreshKey, accountsRevision])
+  }, [sessionStatus, user?.quantDeskUserId, user?.isPlayer, refreshKey, accountsRevision])
 
   const personalAccountId = accounts.find((a) => a.id === selectedAccountId)?.id
     ?? accounts.find((a) => a.accountType === 'Personal')?.id
@@ -350,6 +372,11 @@ export function App() {
       setLatestNotification(null)
       return
     }
+    if (!user?.isPlayer) {
+      // Not a network outage: the hub explicitly requires PLAYER authorization.
+      setLiveStatus(user?.isAdmin ? 'Admin mode' : 'Access limited')
+      return
+    }
 
     let active = true
     const connection = new HubConnectionBuilder()
@@ -398,7 +425,7 @@ export function App() {
       active = false
       void connection.stop().catch(() => {})
     }
-  }, [sessionStatus, user?.quantDeskUserId, liveRetryKey])
+  }, [sessionStatus, user?.quantDeskUserId, user?.isPlayer, liveRetryKey])
 
   function refresh() {
     setActionError('')
@@ -407,7 +434,7 @@ export function App() {
   }
 
   async function createPersonalAccount() {
-    if (sessionStatus !== 'authenticated' || creatingAccount) return
+    if (sessionStatus !== 'authenticated' || !user?.isPlayer || creatingAccount) return
     setCreatingAccount(true)
     setActionError('')
     setAccountMessage('')
@@ -489,6 +516,11 @@ export function App() {
           <p>Sign in to view or create your virtual trading account.</p>
         ) : accountStatus === 'loading' ? (
           <p role="status">Loading your account...</p>
+        ) : accountStatus === 'forbidden' ? (
+          <div className="alert alert-error" role="alert">
+            <strong>{user?.isAdmin ? 'Administration account' : 'Trading access unavailable'}</strong>
+            <p>{accountError}</p>
+          </div>
         ) : accountStatus === 'error' ? (
           <div className="alert alert-error" role="alert">Unable to load account: {accountError}</div>
         ) : personalAccount ? (
@@ -521,7 +553,7 @@ export function App() {
         </div>
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="navigation" aria-label="Main navigation">
-          {navigation.map((item) => (
+          {navigation.filter(item => item.id !== 'administration' || user?.isAdmin).map((item) => (
             <button key={item.id} type="button"
               className={view === item.id ? 'nav-item active' : 'nav-item'}
               aria-current={view === item.id ? 'page' : undefined}
@@ -547,7 +579,7 @@ export function App() {
               <div className="connection-control" aria-live="polite">
                 <span className={liveStatus === 'Connected' ? 'connection-dot on' : 'connection-dot'} />
                 <span>{liveStatus === 'Connected' ? 'Live connection' : liveStatus}</span>
-                {(liveStatus === 'Connection failed' || liveStatus === 'Offline') && (
+                {(liveStatus === 'Connection failed' || liveStatus === 'Offline') && user?.isPlayer && (
                   <button type="button" className="connection-retry" onClick={() => setLiveRetryKey((v) => v + 1)}>Retry</button>
                 )}
               </div>
@@ -556,7 +588,7 @@ export function App() {
             {isAuthenticated ? (
               <div className="user-menu">
                 <div className="avatar" aria-hidden="true">{(user?.username || 'U')[0].toUpperCase()}</div>
-                <div className="user-details"><strong>{user?.username || 'Player'}</strong><small>Signed in</small></div>
+                <div className="user-details"><strong>{user?.displayName || user?.username || 'Player'}</strong><small>{user?.role || 'Signed in'} · {user?.status || 'ACTIVE'}</small></div>
                 <button type="button" className="button button-secondary"
                   onClick={() => void logout()} disabled={signingOut}>
                   {signingOut ? 'Signing out...' : 'Sign out'}
@@ -565,7 +597,10 @@ export function App() {
             ) : sessionStatus === 'loading' ? (
               <span className="muted">Checking session...</span>
             ) : (
-              <a className="button button-primary" href="/auth/login">Sign in</a>
+              <div className="auth-actions">
+                <a className="button button-secondary" href="/auth/login">Sign in</a>
+                <a className="button button-primary" href="/auth/register">Create account</a>
+              </div>
             )}
           </div>
         </header>
@@ -585,10 +620,10 @@ export function App() {
               <section className="welcome-card">
                 <div>
                   <span className="eyebrow">TRADING SIMULATION WORKSPACE</span>
-                  <h2>{isAuthenticated ? `Welcome back, ${user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
+                  <h2>{isAuthenticated ? `Welcome back, ${user?.displayName || user?.username || 'Player'}` : 'Welcome to QuantDesk'}</h2>
                   <p>A professional workspace for virtual trading, portfolio accounting and competitive strategy simulation. Every number comes from your account.</p>
                   <button type="button" className="button button-primary"
-                    onClick={() => navigate('portfolio')}>View my portfolio</button>
+                    onClick={() => navigate(user?.isAdmin ? 'administration' : 'portfolio')}>{user?.isAdmin ? 'Open administration' : 'View my portfolio'}</button>
                 </div>
                 <div className="welcome-symbol" aria-hidden="true">Q</div>
               </section>
@@ -625,7 +660,8 @@ export function App() {
                 </div>
                 <p className="muted">Cost basis and realized P&L come from settled executions. Indicative market value and unrealized P&L use recent QuantDesk trade prices, not live exchange quotes.</p>
                 {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
-                {isAuthenticated && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
+                {isAuthenticated && user?.isPlayer && accountStatus === 'ready' && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
+                {isAuthenticated && accountStatus === 'forbidden' && <p className="muted">Portfolio access is unavailable until the PLAYER role is active in this session.</p>}
                 {personalAccount && positionsStatus === 'loading' && <p role="status">Loading positions from PostgreSQL...</p>}
                 {personalAccount && positionsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {positionsError}</div>}
                 {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
@@ -658,7 +694,7 @@ export function App() {
               </section>
               <section className="modules-panel portfolio-journal" aria-label="Cash transaction journal">
                 <div className="section-heading"><div><span className="eyebrow">AUDIT TRAIL</span><h2>Cash journal</h2></div><span className="muted">Funding and settled trade movements</span></div>
-                {!personalAccount && <p className="muted">Your transaction journal becomes available once you have an account.</p>}
+                {accountStatus === 'ready' && !personalAccount && <p className="muted">Your transaction journal becomes available once you have an account.</p>}
                 {personalAccount && journalStatus === 'loading' && <p role="status">Loading cash entries...</p>}
                 {personalAccount && journalStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load journal: {journalError}</div>}
                 {personalAccount && journalStatus === 'ready' && cashJournal.length === 0 && <p className="muted">No cash entries found.</p>}
@@ -696,17 +732,27 @@ export function App() {
                   <div><span>Username</span><strong>{user?.username || 'Not signed in'}</strong></div>
                   <div><span>Email</span><strong>{user?.email || 'Not provided'}</strong></div>
                   <div><span>Internal user ID</span><code>{user?.quantDeskUserId || '—'}</code></div>
+                  <div><span>Application role</span><strong>{user?.role || '—'}</strong></div>
+                  <div><span>Account status</span><strong>{user?.status || '—'}</strong></div>
+                  <div><span>Public player name</span><strong>{user?.pseudoPublic || 'Not created'}</strong></div>
                   <div><span>Real-time connection</span><strong>{liveStatus}</strong></div>
                 </div>
               </section>
+              {user?.isPlayer && <section className="modules-panel"><PlayerProfileEditor pseudoPublic={user.pseudoPublic ?? null} onSaved={refresh} /></section>}
               {latestNotification && isAuthenticated && (
                 <section className="identity-panel" aria-label="Most recent notification">
                   <div><span className="eyebrow">NOTIFICATIONS</span><h2>Latest update</h2></div>
                   <div className="identity-details"><p role="status">{latestNotification}</p></div>
                 </section>
               )}
-              {isAuthenticated && accountPanel}
+              {isAuthenticated && user?.isPlayer && accountPanel}
             </>
+          )}
+
+          {view === 'administration' && (
+            user?.isAdmin && user.quantDeskUserId
+              ? <IdentityAdministration currentUserId={user.quantDeskUserId} isSuperuser={user.isSuperuser} />
+              : <div className="alert alert-error">You need ADMIN or SUPERUSER permissions to access administration.</div>
           )}
 
           {view === 'modules' && (
