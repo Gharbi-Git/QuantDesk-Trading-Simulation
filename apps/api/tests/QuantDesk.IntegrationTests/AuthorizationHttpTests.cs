@@ -20,7 +20,8 @@ public sealed class AuthorizationHttpTests
     [InlineData(null, "/api/me", 401)]
     [InlineData(null, "/api/player/test", 401)]
     [InlineData(null, "/api/admin/test", 401)]
-    [InlineData("PLAYER", "/api/me", 200)]
+    // The fake user has no provisioned application identity.
+    [InlineData("PLAYER", "/api/me", 401)]
     [InlineData("PLAYER", "/api/player/test", 200)]
     [InlineData("PLAYER", "/api/admin/test", 403)]
     [InlineData("ADMIN", "/api/admin/test", 200)]

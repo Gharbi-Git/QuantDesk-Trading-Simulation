@@ -12,6 +12,7 @@ public sealed class QuantDeskDbContext : DbContext
     }
 
     public DbSet<Utilisateur> Utilisateurs => Set<Utilisateur>();
+    public DbSet<ProfilJoueur> ProfilsJoueurs => Set<ProfilJoueur>();
     public DbSet<CompteTrading> ComptesTrading => Set<CompteTrading>();
     public DbSet<Portefeuille> Portefeuilles => Set<Portefeuille>();
     public DbSet<CashJournalEntry> CashJournal => Set<CashJournalEntry>();
@@ -24,7 +25,8 @@ public sealed class QuantDeskDbContext : DbContext
 
         modelBuilder.Entity<Utilisateur>(entity =>
         {
-            entity.ToTable("utilisateurs");
+            entity.ToTable("utilisateurs", table => table.HasCheckConstraint(
+                "ck_utilisateurs_status", "status IN ('Active', 'Suspended')"));
             entity.HasKey(user => user.Id);
             entity.Property(user => user.Id).HasColumnName("id");
             entity.Property(user => user.KeycloakSubject)
@@ -43,6 +45,31 @@ public sealed class QuantDeskDbContext : DbContext
                 .HasColumnName("created_at_utc")
                 .HasColumnType("timestamp with time zone")
                 .IsRequired();
+            entity.Property(user => user.DisplayName)
+                .HasColumnName("display_name").HasMaxLength(150)
+                .HasDefaultValue("").IsRequired();
+            entity.Property(user => user.Status)
+                .HasColumnName("status").HasConversion<string>()
+                .HasMaxLength(16).HasDefaultValue(UserStatus.Active).IsRequired();
+            entity.Property(user => user.AuthVersion)
+                .HasColumnName("auth_version").HasDefaultValue(0L)
+                .IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<ProfilJoueur>(entity =>
+        {
+            entity.ToTable("profils_joueurs");
+            entity.HasKey(p => p.Id);
+            entity.Property(p => p.Id).HasColumnName("id");
+            entity.Property(p => p.UtilisateurId).HasColumnName("utilisateur_id");
+            entity.Property(p => p.PseudoPublic).HasColumnName("pseudo_public")
+                .HasMaxLength(32).IsRequired();
+            entity.Property(p => p.CreatedAtUtc).HasColumnName("created_at_utc")
+                .HasColumnType("timestamp with time zone");
+            entity.HasIndex(p => p.UtilisateurId).IsUnique();
+            entity.HasOne<Utilisateur>().WithOne()
+                .HasForeignKey<ProfilJoueur>(p => p.UtilisateurId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<CompteTrading>(entity =>

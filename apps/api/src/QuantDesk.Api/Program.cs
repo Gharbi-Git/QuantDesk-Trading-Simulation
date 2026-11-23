@@ -1,6 +1,6 @@
-
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -15,6 +15,10 @@ using QuantDesk.Api.Authorization;
 using QuantDesk.Api.Realtime;
 using Microsoft.AspNetCore.SignalR;
 using QuantDesk.Modules.Portfolio.Domain.Entities;
+using QuantDesk.Api.Portfolio;
+using QuantDesk.Api.Auth;
+using QuantDesk.Api.Admin;
+using QuantDesk.Modules.Administration.Domain.Entities;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -52,6 +56,8 @@ builder.Services.AddDbContext<QuantDeskDbContext>(options =>
 });
 
 builder.Services.AddScoped<UtilisateurProvisioningService>();
+builder.Services.AddScoped<UserIdentityLifecycleService>();
+builder.Services.AddHttpClient<KeycloakAdminRoleService>();
 
 // -------------------------------------------------------
 // Keycloak configuration
@@ -70,7 +76,7 @@ var clientSecret = builder.Configuration["Keycloak:ClientSecret"]
         "Missing Keycloak:ClientSecret");
 // Server-controlled destination after login/logout.
 var frontendReturnUrl =
-    builder.Configuration["Frontend:ReturnUrl"] ?? "/api/me";
+    builder.Configuration["Frontend:ReturnUrl"] ?? (builder.Environment.IsDevelopment() ? "http://127.0.0.1:5173/" : "/");
 
 // -------------------------------------------------------
 // Authentication: Cookies + OpenID Connect
@@ -100,6 +106,27 @@ builder.Services
             builder.Environment.IsDevelopment()
                 ? CookieSecurePolicy.SameAsRequest
                 : CookieSecurePolicy.Always;
+
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            if (!Guid.TryParse(context.Principal?.FindFirst("quantdesk_user_id")?.Value, out var id) ||
+                !long.TryParse(context.Principal?.FindFirst("quantdesk_auth_version")?.Value, out var version))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                return;
+            }
+            var lifecycle = context.HttpContext.RequestServices.GetRequiredService<UserIdentityLifecycleService>();
+            var sessionState = await lifecycle.GetSessionStateAsync(
+                id, version, context.HttpContext.RequestAborted);
+            if (sessionState != IdentitySessionState.Current)
+            {
+                if (sessionState == IdentitySessionState.Suspended)
+                    SessionNotice.SetSuspended(context.HttpContext, !builder.Environment.IsDevelopment());
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
 
         options.Events.OnRedirectToLogin = context =>
         {
@@ -162,6 +189,24 @@ builder.Services
 
         // Keep OIDC tokens out of the browser session cookie.
         options.SaveTokens = false;
+
+        // OIDC registration is initiated by the BFF (not the React client).
+        // Keycloak handles credentials, email verification, and account creation.
+        options.Events.OnRedirectToIdentityProvider = context =>
+        {
+            if (context.Properties.Items.TryGetValue("quantdesk:register", out var requested)
+                && requested == "true")
+            {
+                context.ProtocolMessage.Prompt = "create";
+            }
+            else if (context.Properties.Items.TryGetValue("quantdesk:force-login", out var forceLogin)
+                     && forceLogin == "true")
+            {
+                // Do not silently reuse a suspended user's existing Keycloak SSO session.
+                context.ProtocolMessage.Prompt = "login";
+            }
+            return Task.CompletedTask;
+        };
         // Keycloak needs the client ID when no ID token hint is stored.
 options.Events.OnRedirectToIdentityProviderForSignOut = context =>
 {
@@ -238,7 +283,7 @@ options.Events.OnRedirectToIdentityProviderForSignOut = context =>
                 foreach (var role in roles)
                 {
                     // Only recognize the QuantDesk application roles.
-                    if (role is not ("PLAYER" or "ADMIN"))
+                    if (role is not ("PLAYER" or "ADMIN" or "SUPERUSER"))
                     {
                         continue;
                     }
@@ -297,6 +342,32 @@ options.Events.OnRedirectToIdentityProviderForSignOut = context =>
             identity.AddClaim(new Claim(
                 "quantdesk_user_id",
                 utilisateurId.ToString("D")));
+
+            var lifecycle = context.HttpContext.RequestServices.GetRequiredService<UserIdentityLifecycleService>();
+            var role = QuantDeskRoles.EffectiveRole(context.Principal);
+            if (role == QuantDeskRoles.None)
+            {
+                context.Fail("No QuantDesk application role was assigned. Check Keycloak realm defaults.");
+                return;
+            }
+            IdentitySession state;
+            try
+            {
+                state = await lifecycle.CompleteLoginAsync(
+                    utilisateurId, context.Principal.FindFirst("name")?.Value,
+                    username, role == QuantDeskRoles.Player, context.HttpContext.RequestAborted);
+            }
+            catch (SuspendedAccountException)
+            {
+                // No application session is issued. Return to the UI instead of an OIDC error page.
+                context.HandleResponse();
+                context.HttpContext.Response.Redirect(
+                    QueryHelpers.AddQueryString(frontendReturnUrl, "authNotice", "suspended"));
+                return;
+            }
+            identity.AddClaim(new Claim("quantdesk_auth_version",
+                state.AuthVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            SessionNotice.Clear(context.HttpContext);
         };
     });
 
@@ -308,11 +379,15 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("PlayerOnly", policy =>
         policy.RequireAuthenticatedUser()
-              .RequireRole("PLAYER"));
+              .RequireAssertion(ctx => QuantDeskRoles.CanTrade(ctx.User)));
 
     options.AddPolicy("AdminOnly", policy =>
         policy.RequireAuthenticatedUser()
-              .RequireRole("ADMIN"));
+              .RequireAssertion(ctx => QuantDeskRoles.CanAdminister(ctx.User)));
+
+    options.AddPolicy("SuperuserOnly", policy =>
+        policy.RequireAuthenticatedUser()
+              .RequireAssertion(ctx => QuantDeskRoles.CanManageAdmins(ctx.User)));
 
     options.AddPolicy("ResourceOwner", policy =>
         policy.RequireAuthenticatedUser()
@@ -354,7 +429,8 @@ app.MapGet("/auth/login", () =>
     Results.Challenge(
         new AuthenticationProperties
         {
-           RedirectUri = frontendReturnUrl
+            RedirectUri = frontendReturnUrl,
+            Items = { ["quantdesk:force-login"] = "true" }
         },
         new[]
         {
@@ -362,19 +438,53 @@ app.MapGet("/auth/login", () =>
         }
     ));
 
-// Return the currently authenticated player.
-app.MapGet("/api/me", (ClaimsPrincipal user) =>
+// Start self-service registration through the same confidential OIDC flow.
+// Only the Keycloak server handles passwords and registration decisions.
+app.MapGet("/auth/register", () =>
+    Results.Challenge(
+        new AuthenticationProperties
+        {
+            RedirectUri = frontendReturnUrl,
+            Items = { ["quantdesk:register"] = "true" }
+        },
+        new[] { OpenIdConnectDefaults.AuthenticationScheme }));
+
+// This anonymous endpoint exposes only a short-lived UI notice, never account identity.
+app.MapGet("/api/auth/session-notice", (HttpContext context) =>
 {
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(new
+    {
+        suspended = context.Request.Cookies[SessionNotice.CookieName] == "suspended"
+    });
+}).AllowAnonymous();
+
+// Current session: role is derived from Keycloak, account/profile/status from PostgreSQL.
+app.MapGet("/api/me", async (ClaimsPrincipal user, QuantDeskDbContext db, CancellationToken ct) =>
+{
+    if (!Guid.TryParse(user.FindFirst("quantdesk_user_id")?.Value, out var id))
+        return Results.Unauthorized();
+    var localUser = await db.Utilisateurs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+    if (localUser is null || localUser.Status != UserStatus.Active) return Results.Unauthorized();
+    var playerProfile = await db.ProfilsJoueurs.AsNoTracking()
+        .SingleOrDefaultAsync(x => x.UtilisateurId == id, ct);
+    var role = QuantDeskRoles.EffectiveRole(user);
     return Results.Ok(new
     {
         authenticated = true,
         subject = user.FindFirst("sub")?.Value,
-        quantDeskUserId = user.FindFirst("quantdesk_user_id")?.Value,
-        username = user.Identity?.Name,
-        email = user.FindFirst("email")?.Value
+        quantDeskUserId = id,
+        username = localUser.Username,
+        displayName = localUser.DisplayName,
+        email = localUser.Email,
+        status = localUser.Status.ToString().ToUpperInvariant(),
+        pseudoPublic = playerProfile?.PseudoPublic,
+        role,
+        isPlayer = role == QuantDeskRoles.Player,
+        isAdmin = role is QuantDeskRoles.Admin or QuantDeskRoles.Superuser,
+        isSuperuser = role == QuantDeskRoles.Superuser
     });
-})
-.RequireAuthorization();
+}).RequireAuthorization();
 
 // End the local session and initiate Keycloak logout.
 // Issue a CSRF token to the authenticated frontend.
@@ -390,11 +500,12 @@ app.MapGet("/api/auth/csrf",
             csrfToken = tokens.RequestToken
         });
     })
-    .RequireAuthorization();
+    .AllowAnonymous();
 
 
 // End the local session and initiate Keycloak logout.
-// Require a valid CSRF token before signing out.
+// This route must remain available after a suspended cookie is rejected.
+// CSRF protection is required even for anonymous callers.
 app.MapPost("/auth/logout",
     async (HttpContext context, IAntiforgery antiforgery) =>
     {
@@ -405,6 +516,10 @@ app.MapPost("/auth/logout",
                 error = "Invalid or missing CSRF token."
             });
         }
+
+        // A suspended local session may already be invalid. Clear any stale notice
+        // and end the Keycloak browser session so the next login can switch users.
+        SessionNotice.Clear(context);
 
         return Results.SignOut(
             new AuthenticationProperties
@@ -417,7 +532,7 @@ app.MapPost("/auth/logout",
                 OpenIdConnectDefaults.AuthenticationScheme
             });
     })
-    .RequireAuthorization();
+    .AllowAnonymous();
 
 // -------------------------------------------------------
 // Temporary authorization test endpoints
@@ -674,6 +789,30 @@ app.MapGet("/api/accounts/{id:guid}/journal",
 // Start application
 // -------------------------------------------------------
 
+app.MapPortfolioInsights();
+app.MapPlayerProfileEndpoints();
+app.MapIdentityAdministration();
+
 app.Run();
 
 public partial class Program { }
+
+internal static class SessionNotice
+{
+    internal const string CookieName = "QuantDesk.SessionNotice";
+
+    internal static void SetSuspended(HttpContext context, bool secure)
+    {
+        context.Response.Cookies.Append(CookieName, "suspended", new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = secure,
+            Path = "/",
+            MaxAge = TimeSpan.FromMinutes(5)
+        });
+    }
+
+    internal static void Clear(HttpContext context) =>
+        context.Response.Cookies.Delete(CookieName, new CookieOptions { Path = "/" });
+}

@@ -1,0 +1,7 @@
+/* Scoped identity administration styles; the existing QuantDesk theme stays intact. */
+.profile-edit { display:flex; gap: .75rem; align-items:center; flex-wrap:wrap; padding: 1rem 0; }
+.profile-edit label { font-size: .9rem; color: var(--text-secondary, #ccd1d9); }
+.profile-edit input, .account-select-field input { min-width: 13rem; border-radius: .7rem; padding: .7rem .85rem; background: rgba(255,255,255,.055); border:1px solid rgba(224,185,119,.35); color: inherit; }
+.profile-edit input:focus, .account-select-field input:focus { outline:2px solid #bd9460; outline-offset:2px; }
+.portfolio-table td .button { margin: .2rem; white-space:nowrap; }
+@media (max-width: 680px) { .profile-edit { align-items: stretch; flex-direction:column; } .profile-edit > * { width:100%; } }
