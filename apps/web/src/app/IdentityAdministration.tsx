@@ -31,7 +31,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(r.status === 503
-          ? 'Admin management service is not configured. Run the one-time Keycloak setup.'
+          ? 'User management is temporarily unavailable. Please try again later.'
           : `Failed to load users (HTTP ${r.status})`)
         return r.json() as Promise<ManagedUser[]>
       })
@@ -60,7 +60,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
         const body = await r.json().catch(() => ({})) as { error?: string }
         throw new Error(body.error ?? `Server refused change (HTTP ${r.status})`)
       }
-      setNotice('Saved. Existing sessions of this user have been invalidated; they must sign in again.')
+      setNotice('Changes saved. The affected user may need to sign in again.')
       setRevision(v => v + 1)
     } catch (e: unknown) { setError(String(e)) }
     finally { setBusy(null) }
@@ -69,13 +69,13 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
   return (
     <section className="modules-panel" aria-label="User administration">
       <div className="section-heading">
-        <div><span className="eyebrow">IDENTITY & ACCESS</span><h2>Manage users</h2></div>
-        <span className="muted">Keycloak roles · PostgreSQL user status</span>
+        <div><span className="eyebrow">PEOPLE & PERMISSIONS</span><h2>User management</h2></div>
+        <span className="muted">Account roles · Account status</span>
       </div>
-      <p className="muted">All registered users start as Players. Only an Admin can assign the Session Organizer role. Admins and Session Organizers can suspend or reactivate ordinary Player accounts.</p>
+      <p className="muted">Manage members, assign Session Organizers, and control access to player accounts.</p>
       <label className="account-select-field">
-        <span>SEARCH USERS</span>
-        <input type="search" value={search} placeholder="Username or display name" maxLength={100}
+        <span>FIND A MEMBER</span>
+        <input type="search" value={search} placeholder="Search by name or username" maxLength={100}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} />
       </label>
       {loading && <p role="status">Loading users…</p>}
@@ -89,7 +89,7 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
             <tr key={u.id}>
               <td><strong>{u.displayName || u.username}</strong><div className="muted">@{u.username}</div></td>
               <td><strong>{roleLabel(u.role)}</strong></td>
-              <td>{u.status}</td>
+              <td><span className={`member-status ${u.status === 'ACTIVE' ? 'active' : 'suspended'}`}>{u.status === 'ACTIVE' ? 'Active' : u.status === 'SUSPENDED' ? 'Suspended' : u.status}</span></td>
               <td>
                 {u.id !== currentUserId && u.role === 'PLAYER' && (
                   <button className="button button-secondary" type="button" disabled={busy === u.id}
@@ -99,13 +99,13 @@ export function IdentityAdministration({ currentUserId, isSuperuser }: Props) {
                 )}
                 {isSuperuser && u.id !== currentUserId && u.status === 'ACTIVE' && u.role === 'PLAYER' && (
                   <button className="button button-primary" type="button" disabled={busy === u.id}
-                    onClick={() => void update(u.id, 'grant')}>Make Session Organizer</button>
+                    onClick={() => void update(u.id, 'grant')}>Assign organizer</button>
                 )}
                 {isSuperuser && u.id !== currentUserId && u.role === 'ADMIN' && (
                   <button className="button button-secondary" type="button" disabled={busy === u.id}
-                    onClick={() => void update(u.id, 'revoke')}>Remove Session Organizer</button>
+                    onClick={() => void update(u.id, 'revoke')}>Remove organizer</button>
                 )}
-                {(u.id === currentUserId || u.role === 'SUPERUSER') && <span className="muted">Protected</span>}
+                {(u.id === currentUserId || u.role === 'SUPERUSER') && <span className="muted">Protected account</span>}
               </td>
             </tr>
           ))}</tbody>
