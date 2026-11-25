@@ -2,6 +2,8 @@
 export type MarkedHolding = {
   instrumentId: string
   quantity: number
+  reservedShares: number
+  availableShares: number
   costBasis: number
   averageAcquisitionCost: number
   realizedPnl: number
@@ -18,6 +20,8 @@ export type PortfolioValuation = {
   markPolicy: string
   markDisclosure: string
   cashBalance: number
+  reservedCash: number
+  availableCash: number
   totalCostBasis: number
   realizedPnl: number
   marketValue: number | null
@@ -136,10 +140,14 @@ export function PortfolioInsights({ currency, cash, valuation, history, trades, 
       {error && <div className="alert alert-error" role="alert">Some portfolio details are temporarily unavailable: {error}</div>}
       {loading && <p className="muted" role="status">Loading valuation, trade history and cash movements…</p>}
       <div className="insights-kpis">
-        <article className="insights-kpi"><span className="insights-kpi-label">Available cash</span><strong>{money(cash, currency)}</strong><small>Virtual funds · from your account</small></article>
+       <article className="insights-kpi"><span className="insights-kpi-label">Total cash</span><strong>{money(valuation?.cashBalance ?? cash, currency)}</strong><small>Total cash · includes reserved funds</small></article>
         <article className="insights-kpi"><span className="insights-kpi-label">Estimated portfolio value</span><strong>{ready && valuation.nav !== null ? money(valuation.nav, currency) : 'Unavailable'}</strong><small>{incompleteMarks ? 'Current prices are not available for every holding' : 'Cash and estimated holdings'}</small></article>
         <article className="insights-kpi"><span className="insights-kpi-label">Unrealized gain / loss</span><strong className={ready && (valuation.unrealizedPnl ?? 0) > 0 ? 'money-positive' : ready && (valuation.unrealizedPnl ?? 0) < 0 ? 'money-negative' : ''}>{ready && valuation.unrealizedPnl !== null ? money(valuation.unrealizedPnl, currency) : 'Unavailable'}</strong><small>Open holdings · only if all are marked</small></article>
         <article className="insights-kpi"><span className="insights-kpi-label">Realized gain / loss</span><strong className={ready && valuation.realizedPnl > 0 ? 'money-positive' : ready && valuation.realizedPnl < 0 ? 'money-negative' : ''}>{ready ? money(valuation.realizedPnl, currency) : '—'}</strong><small>Completed trades · before fees</small></article>
+      </div>
+      <div className="insights-kpis" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))' }} aria-label="Cash availability">
+        <article className="insights-kpi"><span className="insights-kpi-label">Available cash</span><strong>{valuation ? money(valuation.availableCash, currency) : 'Unavailable'}</strong><small>Available for new orders · before fees</small></article>
+        <article className="insights-kpi"><span className="insights-kpi-label">Reserved cash</span><strong>{valuation ? money(valuation.reservedCash, currency) : 'Unavailable'}</strong><small>Locked for pending BUY orders</small></article>
       </div>
       {valuation && <div className="insights-disclosure"><details className="valuation-details"><summary>How are portfolio values estimated?</summary><p>{valuation.markDisclosure}</p></details></div>}
       {incompleteMarks && <p className="insights-missing" role="status">Recent prices are unavailable for: {valuation?.missingMarkInstruments.join(', ')}. An estimated portfolio value cannot be shown yet.</p>}

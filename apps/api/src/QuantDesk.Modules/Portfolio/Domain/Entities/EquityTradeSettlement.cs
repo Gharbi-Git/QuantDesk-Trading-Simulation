@@ -13,11 +13,14 @@ public sealed class EquityTradeSettlement
     public string InstrumentId { get; private set; } = string.Empty;
     public long Quantity { get; private set; }
     public decimal ExecutionPrice { get; private set; }
+    public Guid? BuyOrderId { get; private set; }
+    public Guid? SellOrderId { get; private set; }
+    public Guid? SessionId { get; private set; }
     public DateTime SettledAtUtc { get; private set; }
 
     private EquityTradeSettlement() { }
 
-    internal static EquityTradeSettlement FromTrustedExecution(TrustedEquityExecution execution)
+    internal static EquityTradeSettlement FromTrustedExecution(TrustedEquityExecution execution, Guid? buyOrderId = null, Guid? sellOrderId = null, Guid? sessionId = null)
     {
         return new EquityTradeSettlement
         {
@@ -27,11 +30,15 @@ public sealed class EquityTradeSettlement
             InstrumentId = execution.InstrumentId.Trim(),
             Quantity = execution.Quantity,
             ExecutionPrice = execution.ExecutionPrice,
+            BuyOrderId = buyOrderId,
+            SellOrderId = sellOrderId,
+            SessionId = sessionId,
             SettledAtUtc = DateTime.UtcNow
         };
     }
 
-    internal bool Matches(TrustedEquityExecution execution) =>
+    internal bool Matches(TrustedEquityExecution execution, Guid? buyOrderId = null, Guid? sellOrderId = null, Guid? sessionId = null) =>
+        BuyOrderId == buyOrderId && SellOrderId == sellOrderId && SessionId == sessionId &&
         ExecutionId == execution.ExecutionId &&
         BuyerAccountId == execution.BuyerAccountId &&
         SellerAccountId == execution.SellerAccountId &&

@@ -1,15 +1,13 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using QuantDesk.Modules.Infrastructure.Persistence;
-using QuantDesk.Modules.Portfolio.Application;
+using QuantDesk.Modules.Portfolio.Infrastructure.Services;
 
 namespace QuantDesk.Api.Portfolio;
 
 /// <summary>Owner-only read views. No untrusted trade or mark mutation endpoints.</summary>
 public static class PortfolioInsightsEndpoints
 {
-    private static readonly TimeSpan MarkAgeLimit = TimeSpan.FromHours(24);
-
     public static void MapPortfolioInsights(this WebApplication app)
     {
         var group = app.MapGroup("/api/accounts/{id:guid}")
@@ -19,45 +17,26 @@ public static class PortfolioInsightsEndpoints
         // account, NOT a live external quote or cross-session market price. If any open holding is unmarked/stale,
         // all-portfolio NAV and unrealized P&L are deliberately unavailable.
         group.MapGet("/valuation", async (
-            Guid id, ClaimsPrincipal user, QuantDeskDbContext db, CancellationToken ct) =>
+            Guid id, ClaimsPrincipal user, DbContextOptions<QuantDeskDbContext> options, CancellationToken ct) =>
         {
-            var account = await OwnedAccountAsync(id, user, db, ct);
-            if (account is null) return OwnershipFailure(user);
-
-            var positions = await db.PositionsAction.AsNoTracking()
-                .Where(p => p.CompteTradingId == id)
-                .OrderBy(p => p.InstrumentId)
-                .ToListAsync(ct);
-            var symbols = positions.Where(p => p.Quantity > 0)
-                .Select(p => p.InstrumentId).Distinct().ToArray();
-            var now = DateTime.UtcNow;
-            var cutoff = now - MarkAgeLimit;
-            var executions = symbols.Length == 0
-                ? new List<RecentExecution>()
-                : await db.EquitySettlements.AsNoTracking()
-                    .Where(e => symbols.Contains(e.InstrumentId) &&
-                                (e.BuyerAccountId == id || e.SellerAccountId == id) &&
-                                e.SettledAtUtc >= cutoff && e.SettledAtUtc <= now)
-                    .Select(e => new RecentExecution(e.InstrumentId,
-                        e.ExecutionPrice, e.SettledAtUtc))
-                    .ToListAsync(ct);
-
-            var snapshot = PortfolioValuationCalculator.Calculate(
-                account.CashBalance,
-                positions.Select(p => new PortfolioValuationCalculator.Holding(
-                    p.InstrumentId, p.Quantity, p.CostBasis, p.RealizedPnl)),
-                executions.Select(e => new PortfolioValuationCalculator.Mark(
-                    e.InstrumentId, e.Price, e.TimeUtc)), now, MarkAgeLimit);
+            if (!Guid.TryParse(user.FindFirst("quantdesk_user_id")?.Value, out var userId) || userId == Guid.Empty)
+                return Results.Unauthorized();
+            if (id == Guid.Empty) return Results.NotFound();
+            var snapshot = await new PortfolioSnapshotReader(options).ReadOwnedAsync(userId, id, ct);
+            if (snapshot is null) return Results.NotFound();
 
             return Results.Ok(new
             {
-                accountId = id,
-                currency = account.Currency,
-                asOfUtc = now,
-                markPolicy = "LAST_OWN_SETTLED_QUANTDESK_TRADE_24H",
-                markDisclosure = "Indicative marks from your account’s last settled trade within 24 hours; not live quotes or session-wide market prices. " +
+                snapshot.AccountId,
+                snapshot.Currency,
+                snapshot.AsOfUtc,
+                snapshot.Version,
+                snapshot.MarkPolicy,
+                markDisclosure = "Indicative marks from your account's last settled trade within 24 hours; not live quotes or session-wide market prices. " +
                     "NAV is unavailable if any open holding lacks a recent mark.",
                 snapshot.CashBalance,
+                snapshot.ReservedCash,
+                snapshot.AvailableCash,
                 snapshot.TotalCostBasis,
                 snapshot.RealizedPnl,
                 snapshot.MarketValue,
@@ -160,6 +139,5 @@ public static class PortfolioInsightsEndpoints
         Guid.TryParse(user.FindFirst("quantdesk_user_id")?.Value, out _)
             ? Results.NotFound() : Results.Unauthorized();
 
-    private sealed record RecentExecution(string InstrumentId, decimal Price, DateTime TimeUtc);
     private sealed record CashEvent(Guid Id, decimal Amount, string EventKey, DateTime CreatedAtUtc);
 }

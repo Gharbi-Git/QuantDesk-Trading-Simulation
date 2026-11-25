@@ -1,7 +1,9 @@
-﻿using System.Data;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using QuantDesk.Modules.Infrastructure.Persistence;
 using QuantDesk.Modules.Portfolio.Domain.Entities;
+using QuantDesk.Modules.Portfolio.Domain.Rules;
+using QuantDesk.Modules.Portfolio.Application.Contracts;
 
 namespace QuantDesk.Modules.Portfolio.Infrastructure.Services;
 
@@ -21,9 +23,14 @@ public sealed class EquityTradeSettlementService
         _db = db;
     }
 
-    public async Task<EquitySettlementResult> SettleTrustedFillAsync(
+    public Task<EquitySettlementResult> SettleTrustedFillAsync(
         TrustedEquityExecution execution,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        SettleCoreAsync(execution, null, cancellationToken);
+
+    internal async Task<EquitySettlementResult> SettleCoreAsync(
+        TrustedEquityExecution execution, TrustedReservedEquityExecution? linked,
+        CancellationToken cancellationToken)
     {
         Validate(execution);
 
@@ -36,7 +43,7 @@ public sealed class EquityTradeSettlementService
             .SingleOrDefaultAsync(x => x.ExecutionId == execution.ExecutionId, cancellationToken);
         if (prior is not null)
         {
-            VerifyReplay(prior, execution);
+            VerifyReplay(prior, execution, linked);
             return new EquitySettlementResult(execution.ExecutionId, true);
         }
 
@@ -61,7 +68,7 @@ public sealed class EquityTradeSettlementService
             .SingleOrDefaultAsync(x => x.ExecutionId == execution.ExecutionId, cancellationToken);
         if (prior is not null)
         {
-            VerifyReplay(prior, execution);
+            VerifyReplay(prior, execution, linked);
             return new EquitySettlementResult(execution.ExecutionId, true);
         }
 
@@ -73,20 +80,43 @@ public sealed class EquityTradeSettlementService
         var gross = checked(execution.Quantity * execution.ExecutionPrice);
         if (gross <= 0m || decimal.Round(gross, 4) != gross)
             throw new InvalidOperationException("Execution notional is outside supported cash precision.");
-        if (buyer.CashBalance < gross)
+        EquityOrderReservation? buyReservation = null;
+        EquityOrderReservation? sellReservation = null;
+        var instrumentId = execution.InstrumentId.Trim();
+        if (linked is not null)
+        {
+            buyReservation = await LoadReservationAsync(linked.BuyOrderId, buyer.Id, linked.SessionId,
+                instrumentId, EquityReservationSide.Buy, cancellationToken);
+            sellReservation = await LoadReservationAsync(linked.SellOrderId, seller.Id, linked.SessionId,
+                instrumentId, EquityReservationSide.Sell, cancellationToken);
+            if (execution.Quantity > buyReservation.RemainingQuantity ||
+                execution.Quantity > sellReservation.RemainingQuantity ||
+                execution.ExecutionPrice > buyReservation.LimitPrice ||
+                execution.ExecutionPrice < sellReservation.LimitPrice)
+                throw new InvalidOperationException("Execution exceeds reserved quantity or limit price.");
+        }
+        var reservedCash = await ReservationAvailability.ReservedCashAsync(_db, buyer.Id, cancellationToken);
+        var freeCash = EquityReservationRules.AvailableCash(buyer.CashBalance, reservedCash);
+        if (linked is null ? freeCash < gross : buyReservation!.ReservedCash < gross)
             throw new InvalidOperationException("Insufficient buyer cash for this execution.");
 
-        var instrumentId = execution.InstrumentId.Trim();
         var sellerPosition = await _db.PositionsAction.SingleOrDefaultAsync(
             p => p.CompteTradingId == seller.Id && p.InstrumentId == instrumentId,
             cancellationToken);
-        if (sellerPosition is null || sellerPosition.Quantity < execution.Quantity)
+        var reservedShares = await ReservationAvailability.ReservedSharesAsync(_db, seller.Id, instrumentId, cancellationToken);
+        if (sellerPosition is null)
+            throw new InvalidOperationException("Insufficient owned seller shares for this execution.");
+        var freeShares = EquityReservationRules.AvailableShares(sellerPosition.Quantity, reservedShares);
+        if (linked is null ? freeShares < execution.Quantity : sellReservation!.ReservedShares < execution.Quantity)
             throw new InvalidOperationException("Insufficient owned seller shares for this execution.");
 
         var buyerPosition = await _db.PositionsAction.SingleOrDefaultAsync(
             p => p.CompteTradingId == buyer.Id && p.InstrumentId == instrumentId,
             cancellationToken);
 
+        // The account locks protect both reservation and settlement decisions.
+        buyReservation?.ApplyFill(execution.Quantity, execution.ExecutionPrice);
+        sellReservation?.ApplyFill(execution.Quantity, execution.ExecutionPrice);
         // All mutations are staged in EF, then saved atomically below.
         sellerPosition.Sell(execution.Quantity, execution.ExecutionPrice);
         if (buyerPosition is null)
@@ -102,17 +132,26 @@ public sealed class EquityTradeSettlementService
             buyer.Id, -gross, $"stock-fill:{execution.ExecutionId:D}:buyer"));
         _db.CashJournal.Add(new CashJournalEntry(
             seller.Id, gross, $"stock-fill:{execution.ExecutionId:D}:seller"));
-        _db.EquitySettlements.Add(EquityTradeSettlement.FromTrustedExecution(execution));
+        _db.EquitySettlements.Add(EquityTradeSettlement.FromTrustedExecution(execution, linked?.BuyOrderId, linked?.SellOrderId, linked?.SessionId));
 
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new EquitySettlementResult(execution.ExecutionId, false);
     }
 
-    private static void VerifyReplay(
-        EquityTradeSettlement prior, TrustedEquityExecution execution)
+    private async Task<EquityOrderReservation> LoadReservationAsync(Guid orderId, Guid accountId,
+        Guid sessionId, string instrumentId, EquityReservationSide side, CancellationToken ct)
     {
-        if (!prior.Matches(execution))
+        var row = await _db.EquityOrderReservations.SingleOrDefaultAsync(r => r.OrderId == orderId &&
+            r.AccountId == accountId && r.SessionId == sessionId && r.InstrumentId == instrumentId &&
+            r.Side == side && r.Status == EquityReservationStatus.Active, ct);
+        return row ?? throw new InvalidOperationException("Active reservation not found for execution.");
+    }
+
+    private static void VerifyReplay(
+        EquityTradeSettlement prior, TrustedEquityExecution execution, TrustedReservedEquityExecution? linked)
+    {
+        if (!prior.Matches(execution, linked?.BuyOrderId, linked?.SellOrderId, linked?.SessionId))
             throw new InvalidOperationException(
                 "An execution ID was reused with different settlement details.");
     }
