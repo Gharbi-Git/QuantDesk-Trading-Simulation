@@ -42,6 +42,9 @@ public sealed class CompteTrading
         Version = checked(Version + 1);
     }
 
+    // Reservation changes affect buying power, not settled cash or the journal.
+    internal void AdvanceReservationVersion() => Version = checked(Version + 1);
+
     public static CompteTrading OpenPersonal(
         Guid ownerUserId,
         decimal startingCash)

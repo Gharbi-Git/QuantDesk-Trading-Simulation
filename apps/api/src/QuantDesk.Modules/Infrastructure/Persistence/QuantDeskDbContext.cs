@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using QuantDesk.Modules.Administration.Domain.Entities;
 using QuantDesk.Modules.Portfolio.Domain.Entities;
+using QuantDesk.Modules.Portfolio.Infrastructure.Persistence;
 
 namespace QuantDesk.Modules.Infrastructure.Persistence;
 
@@ -18,10 +19,12 @@ public sealed class QuantDeskDbContext : DbContext
     public DbSet<CashJournalEntry> CashJournal => Set<CashJournalEntry>();
     public DbSet<PositionAction> PositionsAction => Set<PositionAction>();
     public DbSet<EquityTradeSettlement> EquitySettlements => Set<EquityTradeSettlement>();
+    public DbSet<EquityOrderReservation> EquityOrderReservations => Set<EquityOrderReservation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfiguration(new EquityOrderReservationConfiguration());
 
         modelBuilder.Entity<Utilisateur>(entity =>
         {
@@ -188,6 +191,7 @@ public sealed class QuantDeskDbContext : DbContext
                 table.HasCheckConstraint("ck_equity_settlement_quantity_positive", "quantity > 0");
                 table.HasCheckConstraint("ck_equity_settlement_price_positive", "execution_price > 0");
                 table.HasCheckConstraint("ck_equity_settlement_different_accounts", "buyer_account_id <> seller_account_id");
+                table.HasCheckConstraint("ck_equity_settlement_order_link", "(buy_order_id IS NULL AND sell_order_id IS NULL AND session_id IS NULL) OR (buy_order_id IS NOT NULL AND sell_order_id IS NOT NULL AND session_id IS NOT NULL AND buy_order_id <> sell_order_id)");
             });
             entity.HasKey(e => e.ExecutionId);
             entity.Property(e => e.ExecutionId).HasColumnName("execution_id");
@@ -198,6 +202,11 @@ public sealed class QuantDeskDbContext : DbContext
             entity.Property(e => e.Quantity).HasColumnName("quantity");
             entity.Property(e => e.ExecutionPrice).HasColumnName("execution_price")
                 .HasPrecision(20, 4);
+            entity.Property(e => e.BuyOrderId).HasColumnName("buy_order_id");
+            entity.Property(e => e.SellOrderId).HasColumnName("sell_order_id");
+            entity.Property(e => e.SessionId).HasColumnName("session_id");
+            entity.HasOne<EquityOrderReservation>().WithMany().HasForeignKey(e => e.BuyOrderId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EquityOrderReservation>().WithMany().HasForeignKey(e => e.SellOrderId).OnDelete(DeleteBehavior.Restrict);
             entity.Property(e => e.SettledAtUtc).HasColumnName("settled_at_utc")
                 .HasColumnType("timestamp with time zone");
             entity.HasOne<CompteTrading>().WithMany()

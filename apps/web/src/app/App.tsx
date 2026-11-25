@@ -39,16 +39,6 @@ type TradingAccount = {
   createdAtUtc?: string
 }
 
-type StockPosition = {
-  id: string
-  compteTradingId: string
-  instrumentId: string
-  quantity: number
-  costBasis: number
-  averageAcquisitionCost: number
-  realizedPnl: number
-}
-
 type CashJournalRow = {
   id: string
   compteTradingId: string
@@ -149,9 +139,6 @@ export function App() {
   const [accountsRevision, setAccountsRevision] = useState(0)
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
 
-  const [positions, setPositions] = useState<StockPosition[]>([])
-  const [positionsStatus, setPositionsStatus] = useState<AccountStatus>('idle')
-  const [positionsError, setPositionsError] = useState('')
   const [cashJournal, setCashJournal] = useState<CashJournalRow[]>([])
   const [journalStatus, setJournalStatus] = useState<AccountStatus>('idle')
   const [journalError, setJournalError] = useState('')
@@ -291,40 +278,15 @@ export function App() {
 
   useEffect(() => {
     if (sessionStatus !== 'authenticated' || !personalAccountId) {
-      setPositions([])
-      setPositionsStatus('idle')
       setCashJournal([])
       setJournalStatus('idle')
       return
     }
 
     const controller = new AbortController()
-    setPositions([])
-    setPositionsStatus('loading')
-    setPositionsError('')
     setCashJournal([])
     setJournalStatus('loading')
     setJournalError('')
-
-    const loadPositions = async () => {
-      try {
-        const response = await fetch(`/api/accounts/${encodeURIComponent(personalAccountId)}/positions`, {
-          credentials: 'same-origin', signal: controller.signal,
-        })
-        if (!response.ok) throw new Error(`Positions API: HTTP ${response.status}`)
-        const body: unknown = await response.json()
-        if (!Array.isArray(body)) throw new Error('Invalid positions response')
-        if (!controller.signal.aborted) {
-          setPositions(body as StockPosition[])
-          setPositionsStatus('ready')
-        }
-      } catch (error: unknown) {
-        if (!controller.signal.aborted) {
-          setPositionsError(String(error))
-          setPositionsStatus('error')
-        }
-      }
-    }
 
     const loadJournal = async () => {
       try {
@@ -346,7 +308,6 @@ export function App() {
       }
     }
 
-    void loadPositions()
     void loadJournal()
     return () => controller.abort()
   }, [sessionStatus, personalAccountId, refreshKey, accountsRevision])
@@ -378,7 +339,9 @@ export function App() {
           if (!responses[i].ok) throw new Error(`${urls[i]}: HTTP ${responses[i].status}`)
         }
         const [summary, history, trades] = await Promise.all(responses.map((r) => r.json()))
-        if (!Array.isArray(trades) || !Array.isArray(history.history) || !Array.isArray(summary.positions)) {
+        if (!Array.isArray(trades) || !Array.isArray(history.history) || !Array.isArray(summary.positions) || summary.accountId !== personalAccountId ||
+          !Number.isFinite(summary.availableCash) || !Number.isFinite(summary.reservedCash) ||
+          summary.positions.some((p: PortfolioValuation['positions'][number]) => !Number.isFinite(p.availableShares) || !Number.isFinite(p.reservedShares))) {
           throw new Error('Unexpected portfolio analytics API response')
         }
         if (!controller.signal.aborted) {
@@ -522,6 +485,7 @@ export function App() {
   }
 
   const personalAccount = accounts.find((account) => account.id === personalAccountId) ?? null
+  const currentValuation = valuation?.accountId === personalAccountId ? valuation : null
   const positionCurrency = personalAccount?.currency ?? 'USD'
   const isAuthenticated = sessionStatus === 'authenticated'
   const accountPanel = (
@@ -688,7 +652,7 @@ export function App() {
               {accountPanel}
               {isAuthenticated && personalAccount && (
                 <PortfolioInsights currency={personalAccount.currency} cash={personalAccount.cashBalance}
-                  valuation={valuation} history={balanceHistory} trades={recentTrades}
+                  valuation={currentValuation} history={balanceHistory} trades={recentTrades}
                   loading={insightsStatus === 'loading'} error={insightsError} compact />
               )}
               <div className="section-heading"><div><span className="eyebrow">PLATFORM</span><h2>Explore QuantDesk</h2></div><span className="muted">Explore what is coming next</span></div>
@@ -708,7 +672,7 @@ export function App() {
               {accountPanel}
               {personalAccount && (
                 <PortfolioInsights currency={personalAccount.currency} cash={personalAccount.cashBalance}
-                  valuation={valuation} history={balanceHistory} trades={recentTrades}
+                  valuation={currentValuation} history={balanceHistory} trades={recentTrades}
                   loading={insightsStatus === 'loading'} error={insightsError} />
               )}
               <section className="modules-panel portfolio-positions" aria-label="Portfolio holdings">
@@ -720,24 +684,26 @@ export function App() {
                 {!isAuthenticated && <p className="muted">Sign in to see your holdings.</p>}
                 {isAuthenticated && user?.isPlayer && accountStatus === 'ready' && !personalAccount && <p className="muted">Create a personal trading account to activate your portfolio.</p>}
                 {isAuthenticated && accountStatus === 'forbidden' && <p className="muted">Portfolio access is unavailable until the Player role is active in this session.</p>}
-                {personalAccount && positionsStatus === 'loading' && <p role="status">Loading your positions...</p>}
-                {personalAccount && positionsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {positionsError}</div>}
-                {personalAccount && positionsStatus === 'ready' && positions.length === 0 && (
+                {personalAccount && insightsStatus === 'loading' && <p role="status">Loading your positions...</p>}
+                {personalAccount && insightsStatus === 'error' && <div className="alert alert-error" role="alert">Unable to load positions: {insightsError}</div>}
+                {personalAccount && currentValuation && currentValuation.positions.length === 0 && (
                   <div className="portfolio-empty">
                     <strong>No stock positions yet</strong>
                     <p>Your holdings will appear here after your first completed stock trade.</p>
                   </div>
                 )}
-                {personalAccount && positionsStatus === 'ready' && positions.length > 0 && (
+                {personalAccount && currentValuation && currentValuation.positions.length > 0 && (
                   <div className="portfolio-table-scroll">
                     <table className="portfolio-table">
-                      <thead><tr><th scope="col">Instrument</th><th scope="col">Shares</th><th scope="col">Avg. acquisition</th><th scope="col">Cost basis</th><th scope="col">Last trade mark</th><th scope="col">Unrealized P&L</th><th scope="col">Realized P&L</th></tr></thead>
+                      <thead><tr><th scope="col">Instrument</th><th scope="col">Owned shares</th><th scope="col">Available</th><th scope="col">Reserved</th><th scope="col">Avg. acquisition</th><th scope="col">Cost basis</th><th scope="col">Last trade mark</th><th scope="col">Unrealized P&L</th><th scope="col">Realized P&L</th></tr></thead>
                       <tbody>
-                        {positions.map((position) => {
-                          const marked = valuation?.positions.find((p) => p.instrumentId === position.instrumentId)
-                          return <tr key={position.id}>
+                        {currentValuation.positions.map((position) => {
+                          const marked = position
+                          return <tr key={position.instrumentId}>
                             <td><strong className="instrument-symbol">{position.instrumentId}</strong>{position.quantity === 0 && <small className="closed-position">Closed position</small>}</td>
                             <td>{position.quantity.toLocaleString('en-US')}</td>
+                            <td>{position.availableShares.toLocaleString('en-US')}</td>
+                            <td>{position.reservedShares.toLocaleString('en-US')}</td>
                             <td>{formatMoney(position.averageAcquisitionCost, positionCurrency)}</td>
                             <td>{formatMoney(position.costBasis, positionCurrency)}</td>
                             <td>{marked?.markPrice == null ? '—' : formatMoney(marked.markPrice, positionCurrency)}</td>

@@ -58,6 +58,29 @@ public sealed class PortfolioInsightsHttpTests
     }
 
     [Fact]
+    public async Task Valuation_reports_cash_and_share_reservations_without_reducing_nav()
+    {
+        await using var fixture = await PortfolioHttpFixture.CreateAsync();
+        await fixture.SeedTrustedStockFillsAsync(3);
+        await fixture.ReserveAssetsAsync();
+        using var response = await fixture.GetAsync(fixture.OwnerAccountId, "valuation", "PLAYER", fixture.OwnerUserId);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = body.RootElement;
+        Assert.Equal(99997m, root.GetProperty("cashBalance").GetDecimal());
+        Assert.Equal(15000m, root.GetProperty("reservedCash").GetDecimal());
+        Assert.Equal(84997m, root.GetProperty("availableCash").GetDecimal());
+        Assert.Equal(100000m, root.GetProperty("nav").GetDecimal());
+        Assert.Equal(5L, root.GetProperty("version").GetInt64());
+        var position = Assert.Single(root.GetProperty("positions").EnumerateArray().ToArray());
+        Assert.Equal(3L, position.GetProperty("quantity").GetInt64());
+        Assert.Equal(2L, position.GetProperty("reservedShares").GetInt64());
+        Assert.Equal(1L, position.GetProperty("availableShares").GetInt64());
+        using var denied = await fixture.GetAsync(fixture.OwnerAccountId, "valuation", "PLAYER", fixture.OtherUserId);
+        Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+    }
+
+    [Fact]
     public async Task Fresh_account_has_one_funding_event_and_reconciled_history()
     {
         await using var fixture = await PortfolioHttpFixture.CreateAsync();
@@ -262,6 +285,16 @@ internal sealed class PortfolioHttpFixture : IAsyncDisposable
         }
     }
 
+    public async Task ReserveAssetsAsync()
+    {
+        var service = new PortfolioReservationService(_options);
+        var session = Guid.NewGuid();
+        await service.ReserveAsync(OwnerUserId, Guid.NewGuid(), OwnerAccountId,
+            session, _instrument, EquityReservationSide.Buy, 100, 150m);
+        await service.ReserveAsync(OwnerUserId, Guid.NewGuid(), OwnerAccountId,
+            session, _instrument, EquityReservationSide.Sell, 2, 1m);
+    }
+
     public async Task<HttpStatusCode> StatusAsync(Guid account, string endpoint, string? role = null, Guid? userId = null)
     {
         using var response = await GetAsync(account, endpoint, role, userId);
@@ -285,6 +318,8 @@ internal sealed class PortfolioHttpFixture : IAsyncDisposable
             {
                 await db.Database.ExecuteSqlInterpolatedAsync(
                     $"DELETE FROM equity_trade_settlements WHERE buyer_account_id = {OwnerAccountId} OR seller_account_id = {OwnerAccountId} OR buyer_account_id = {OtherAccountId} OR seller_account_id = {OtherAccountId}");
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"DELETE FROM equity_order_reservations WHERE account_id = {OwnerAccountId} OR account_id = {OtherAccountId}");
                 await db.Database.ExecuteSqlInterpolatedAsync(
                     $"DELETE FROM comptes_trading WHERE \"Id\" = {OwnerAccountId} OR \"Id\" = {OtherAccountId}");
             }

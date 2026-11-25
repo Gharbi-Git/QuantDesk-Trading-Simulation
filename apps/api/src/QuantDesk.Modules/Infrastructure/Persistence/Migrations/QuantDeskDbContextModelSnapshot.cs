@@ -196,12 +196,90 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityOrderReservation", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<long>("FilledQuantity")
+                        .HasColumnType("bigint")
+                        .HasColumnName("filled_quantity");
+
+                    b.Property<string>("InstrumentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("instrument_id");
+
+                    b.Property<decimal>("LimitPrice")
+                        .HasPrecision(20, 4)
+                        .HasColumnType("numeric(20,4)")
+                        .HasColumnName("limit_price");
+
+                    b.Property<long>("OriginalQuantity")
+                        .HasColumnType("bigint")
+                        .HasColumnName("original_quantity");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Side")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("side");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("OrderId");
+
+                    b.HasIndex("AccountId", "Status", "Side", "InstrumentId");
+
+                    b.ToTable("equity_order_reservations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_equity_reservation_price", "limit_price > 0 AND original_quantity * limit_price <= 9999999999999999.9999");
+
+                            t.HasCheckConstraint("ck_equity_reservation_quantity", "original_quantity > 0 AND filled_quantity >= 0 AND filled_quantity <= original_quantity");
+
+                            t.HasCheckConstraint("ck_equity_reservation_side", "side IN ('Buy', 'Sell')");
+
+                            t.HasCheckConstraint("ck_equity_reservation_state", "(status = 'Filled' AND filled_quantity = original_quantity) OR (status IN ('Active', 'Released') AND filled_quantity < original_quantity)");
+
+                            t.HasCheckConstraint("ck_equity_reservation_status", "status IN ('Active', 'Filled', 'Released')");
+
+                            t.HasCheckConstraint("ck_equity_reservation_version", "version >= 0");
+                        });
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityTradeSettlement", b =>
                 {
                     b.Property<Guid>("ExecutionId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("execution_id");
+
+                    b.Property<Guid?>("BuyOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("buy_order_id");
 
                     b.Property<Guid>("BuyerAccountId")
                         .HasColumnType("uuid")
@@ -222,9 +300,17 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("quantity");
 
+                    b.Property<Guid?>("SellOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("sell_order_id");
+
                     b.Property<Guid>("SellerAccountId")
                         .HasColumnType("uuid")
                         .HasColumnName("seller_account_id");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
 
                     b.Property<DateTime>("SettledAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -232,13 +318,19 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
 
                     b.HasKey("ExecutionId");
 
+                    b.HasIndex("BuyOrderId");
+
                     b.HasIndex("BuyerAccountId");
+
+                    b.HasIndex("SellOrderId");
 
                     b.HasIndex("SellerAccountId");
 
                     b.ToTable("equity_trade_settlements", null, t =>
                         {
                             t.HasCheckConstraint("ck_equity_settlement_different_accounts", "buyer_account_id <> seller_account_id");
+
+                            t.HasCheckConstraint("ck_equity_settlement_order_link", "(buy_order_id IS NULL AND sell_order_id IS NULL AND session_id IS NULL) OR (buy_order_id IS NOT NULL AND sell_order_id IS NOT NULL AND session_id IS NOT NULL AND buy_order_id <> sell_order_id)");
 
                             t.HasCheckConstraint("ck_equity_settlement_price_positive", "execution_price > 0");
 
@@ -339,13 +431,32 @@ namespace QuantDesk.Modules.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityOrderReservation", b =>
+                {
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("QuantDesk.Modules.Portfolio.Domain.Entities.EquityTradeSettlement", b =>
                 {
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.EquityOrderReservation", null)
+                        .WithMany()
+                        .HasForeignKey("BuyOrderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", null)
                         .WithMany()
                         .HasForeignKey("BuyerAccountId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.EquityOrderReservation", null)
+                        .WithMany()
+                        .HasForeignKey("SellOrderId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("QuantDesk.Modules.Portfolio.Domain.Entities.CompteTrading", null)
                         .WithMany()
