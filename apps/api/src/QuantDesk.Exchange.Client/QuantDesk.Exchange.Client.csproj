@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+    <PackageReference Include="Google.Protobuf" />
+
+    <Protobuf
+      Include="../../../../contracts/proto/quantdesk/v1/exchange.proto"
+      ProtoRoot="../../../../contracts/proto/quantdesk/v1"
+      GrpcServices="Client" />
+  </ItemGroup>
+</Project>
