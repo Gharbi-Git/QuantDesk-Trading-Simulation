@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <ProjectReference Include="..\QuantDesk.Exchange.Client\QuantDesk.Exchange.Client.csproj" />
     <ProjectReference Include="..\QuantDesk.Modules\QuantDesk.Modules.csproj" />
     <ProjectReference Include="..\QuantDesk.Shared\QuantDesk.Shared.csproj"/>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" />

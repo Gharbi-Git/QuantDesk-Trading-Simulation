@@ -1,3 +1,4 @@
+using QuantDesk.Api.ExchangeIntegration;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
@@ -55,6 +56,7 @@ builder.Services.AddDbContext<QuantDeskDbContext>(options =>
     options.UseNpgsql(connectionString);
 });
 
+builder.Services.AddDevelopmentExchange(builder.Configuration, builder.Environment, connectionString);
 builder.Services.AddScoped<UtilisateurProvisioningService>();
 builder.Services.AddScoped<UserIdentityLifecycleService>();
 builder.Services.AddHttpClient<KeycloakAdminRoleService>();
