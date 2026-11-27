@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../QuantDesk.Exchange.Client/QuantDesk.Exchange.Client.csproj" />
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+    <PackageReference Include="Google.Protobuf" />
+    <Protobuf Include="../../../../contracts/proto/quantdesk/v2/exchange_outcomes.proto" ProtoRoot="../../../../contracts/proto/quantdesk/v2" AdditionalImportDirs="../../../../contracts/proto/quantdesk/v1" GrpcServices="Client" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,51 @@
+// D1/D2 approved outcome protocol proposal. Separate from exchange.v1.
+syntax = "proto3";
+package quantdesk.v2.exchange;
+option csharp_namespace = "QuantDesk.Contracts.V2.Exchange";
+import "exchange.proto";
+service ExchangeService {
+  rpc GetStatus(quantdesk.v1.exchange.StatusRequest) returns (StatusReply);
+  rpc RegisterBook(quantdesk.v1.exchange.RegisterBookRequest) returns (CommandReceipt);
+  rpc SubmitOrder(quantdesk.v1.exchange.SubmitOrderRequest) returns (CommandReceipt);
+  rpc CancelOrder(quantdesk.v1.exchange.CancelOrderRequest) returns (CommandReceipt);
+  rpc GetCommandReceipt(quantdesk.v1.exchange.ReceiptRequest) returns (ReceiptReply);
+  rpc GetDeliveryBatch(quantdesk.v1.exchange.DeliveryRequest) returns (DeliveryBatch);
+}
+message StatusReply {
+  string journal_epoch = 1;
+  bool healthy = 2;
+  int64 high_watermark = 3;
+  uint32 journal_format = 4; // must equal 4
+}
+enum RejectionReason {
+  REJECTION_REASON_UNSPECIFIED = 0;
+  REJECTION_REASON_DOMAIN_REJECTED = 1;
+  REJECTION_REASON_NUMERIC_REJECTED = 2;
+}
+message RejectedDecision {
+  int64 command_sequence = 1;
+  string command_id = 2;
+  RejectionReason reason = 3;
+  oneof payload {
+    quantdesk.v1.exchange.RegisteredBook rejected_registration = 4;
+    quantdesk.v1.exchange.EquityLimitOrder rejected_submit = 5;
+    quantdesk.v1.exchange.CancelledOrder rejected_cancel = 6;
+  }
+}
+message DecisionRecord {
+  oneof decision {
+    quantdesk.v1.exchange.DeliveryRecord accepted = 1;
+    RejectedDecision rejected = 2;
+  }
+}
+// Full immutable journal record, including identity, payload and decision.
+message CommandReceipt {
+  string journal_epoch = 1;
+  DecisionRecord record = 2;
+}
+message ReceiptReply { CommandReceipt receipt = 1; } // absent means unknown
+message DeliveryBatch {
+  string journal_epoch = 1;
+  int64 high_watermark = 2;
+  repeated DecisionRecord records = 3;
+}
