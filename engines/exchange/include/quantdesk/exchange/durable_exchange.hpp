@@ -7,14 +7,17 @@
 #include <vector>
 
 namespace quantdesk::exchange {
+// V4 records definitive atomic domain decisions. Only Accepted authorizes a trade.
+enum class CommandOutcome { Accepted = 0, DomainRejected = 1, NumericRejected = 2 };
 // Durable receipt; delivery IDs are derived separately from the bound epoch.
 struct CommandReceipt {
     std::int64_t command_sequence;
     std::optional<SubmitResult> submission;
+    CommandOutcome outcome = CommandOutcome::Accepted;
 };
 enum class JournalMode { CreateNew, OpenExisting };
-// V2 is retained for local historical replay; V3 is required for trading transport.
-enum class JournalFormat { EpochV2, TimestampedV3 };
+// V2/V3 retain historical semantics. V4 adds definitive domain outcomes.
+enum class JournalFormat { EpochV2, TimestampedV3, OutcomesV4 };
 enum class DeliveryKind { RegisterBook, Submit, Cancel };
 struct DeliveredFill {
     std::string execution_id;
@@ -32,6 +35,7 @@ struct DeliveryRecord {
     std::optional<OrderState> state; // only Submit
     Quantity filled_quantity, open_quantity; // only Submit
     std::vector<DeliveredFill> fills;
+    CommandOutcome outcome = CommandOutcome::Accepted;
 };
 struct DeliveryBatch {
     std::string journal_epoch;
@@ -48,7 +52,7 @@ public:
     // Both CreateNew and OpenExisting must supply the same epoch.
     DurableExchange(const std::filesystem::path& path, JournalMode mode,
                     const std::string& journal_epoch, std::size_t byte_limit = 64 * 1024 * 1024);
-    // Explicit V3 opt-in. Never open an older file as V3 or reuse its epoch.
+    // Explicit V3/V4 opt-in. Never reopen another format or reuse its epoch.
     DurableExchange(const std::filesystem::path& path, JournalMode mode,
                     const std::string& journal_epoch, JournalFormat format,
                     std::size_t byte_limit = 64 * 1024 * 1024);
@@ -60,7 +64,8 @@ public:
     [[nodiscard]] CommandReceipt cancel(const std::string& command_id, const BookKey& key,
                                          const std::string& order_id, const std::string& account_id);
     [[nodiscard]] std::optional<CommandReceipt> receipt(const std::string& command_id) const;
-    // Pull committed commands after a consumer-owned durable cursor (0 = start).
+    // Pull committed decisions after a consumer-owned durable cursor (0 = start).
+    // V4 includes rejections. Consumers MUST check outcome before any effect.
     // Non-mutating; replay returns the same IDs. V1 journals cannot deliver.
     [[nodiscard]] DeliveryBatch delivery_after(const std::string& expected_epoch,
                                                std::int64_t after_sequence,

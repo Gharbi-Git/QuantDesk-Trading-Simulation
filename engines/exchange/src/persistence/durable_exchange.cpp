@@ -22,10 +22,10 @@
 namespace quantdesk::exchange {
 namespace {
 constexpr std::string_view legacy_header = "QD-JOURNAL-1\n";
-std::string journal_header(const std::string& epoch, bool timestamped) {
+std::string journal_header(const std::string& epoch, bool timestamped, bool outcomes) {
     if (epoch.empty()) return std::string(legacy_header);
     validate_journal_epoch(epoch);
-    return std::string(timestamped ? "QD-JOURNAL-3\n" : "QD-JOURNAL-2\n") + epoch + "\n";
+    return std::string(outcomes ? "QD-JOURNAL-4\n" : timestamped ? "QD-JOURNAL-3\n" : "QD-JOURNAL-2\n") + epoch + "\n";
 }
 constexpr std::size_t max_record = 2048;
 constexpr std::size_t max_file = 64 * 1024 * 1024;
@@ -159,9 +159,10 @@ std::int64_t utc_now_micros() {
         throw std::runtime_error("UTC clock out of supported range");
     return static_cast<std::int64_t>(t);
 }
-std::string frame(std::int64_t sequence, std::string_view command, std::optional<std::int64_t> timestamp) {
+std::string frame(std::int64_t sequence, std::string_view command, std::optional<std::int64_t> timestamp, std::optional<CommandOutcome> outcome = std::nullopt) {
     std::string body; put(body, static_cast<std::uint64_t>(sequence), 8);
     if (timestamp) put(body, static_cast<std::uint64_t>(*timestamp), 8);
+    if (outcome) put(body, static_cast<std::uint64_t>(*outcome), 1);
     body += command;
     std::string result; put(result, body.size(), 4); result += body; put(result, crc(body), 4); return result;
 }
@@ -196,6 +197,7 @@ Decoded decode(std::string_view s) {
 struct DurableExchange::Impl {
     const std::string epoch;
     const bool timestamped;
+    const bool outcomes;
     const std::string header;
     File file;
     Exchange exchange;
@@ -205,15 +207,15 @@ struct DurableExchange::Impl {
     std::vector<const Entry*> ordered;
     std::int64_t sequence = 0;
     bool ok = true;
-    Impl(const std::filesystem::path& path, JournalMode mode, std::size_t limit, std::string journal_epoch, bool with_timestamps = false)
-        : epoch(std::move(journal_epoch)), timestamped(with_timestamps),
-          header(journal_header(epoch, timestamped)), file(path, mode, limit, header) {
+    Impl(const std::filesystem::path& path, JournalMode mode, std::size_t limit, std::string journal_epoch, bool with_timestamps = false, bool with_outcomes = false)
+        : epoch(std::move(journal_epoch)), timestamped(with_timestamps), outcomes(with_outcomes),
+          header(journal_header(epoch, timestamped, outcomes)), file(path, mode, limit, header) {
         auto data = file.read_all(); std::string_view input(data);
         if (!input.starts_with(header)) corrupt();
         input.remove_prefix(header.size());
         while (!input.empty()) {
             const auto n = get(input, 4);
-            if (n < (timestamped ? 17u : 9u) || n > max_record || n > input.size()) corrupt();
+            if (n < (outcomes ? 18u : timestamped ? 17u : 9u) || n > max_record || n > input.size()) corrupt();
             auto body = input.substr(0, static_cast<std::size_t>(n)); input.remove_prefix(static_cast<std::size_t>(n));
             if (get(input, 4) != crc(body)) corrupt();
             if (get(body, 8) != static_cast<std::uint64_t>(sequence + 1)) corrupt();
@@ -223,9 +225,17 @@ struct DurableExchange::Impl {
                 if (raw == 0 || raw > max_utc_micros) corrupt();
                 timestamp = static_cast<std::int64_t>(raw);
             }
+            auto expected = CommandOutcome::Accepted;
+            if (outcomes) {
+                const auto raw = get(body, 1);
+                if (raw > static_cast<std::uint64_t>(CommandOutcome::NumericRejected)) corrupt();
+                expected = static_cast<CommandOutcome>(raw);
+            }
             auto d = decode(body);
             if (entries.contains(d.command_id)) corrupt();
-            auto result = apply(d, sequence + 1);
+            if (d.type == 'S') (void)Order(d.request);
+            auto result = decide(d, sequence + 1);
+            if (result.outcome != expected) corrupt();
             const auto it = entries.emplace(d.command_id, Entry{std::string(body), std::move(result), timestamp}).first;
             ordered.push_back(&it->second); ++sequence;
         }
@@ -242,6 +252,19 @@ struct DurableExchange::Impl {
         }
         return receipt;
     }
+    CommandReceipt decide(const Decoded& d, std::int64_t seq) {
+        // Only documented atomic domain failures can become definitive rejections.
+        // No clock, storage, allocation or unexpected failure becomes a rejection.
+        try { return apply(d, seq); }
+        catch (const std::invalid_argument&) {
+            if (!outcomes) throw;
+            return {seq, std::nullopt, CommandOutcome::DomainRejected};
+        }
+        catch (const std::overflow_error&) {
+            if (!outcomes) throw;
+            return {seq, std::nullopt, CommandOutcome::NumericRejected};
+        }
+    }
     CommandReceipt execute(std::string command) {
         check();
         const auto d = decode(command);
@@ -253,15 +276,16 @@ struct DurableExchange::Impl {
         // Sample before applying anything, so a bad clock cannot mutate the book.
         std::optional<std::int64_t> timestamp;
         if (timestamped) timestamp = utc_now_micros();
-        const auto bytes = frame(sequence + 1, command, timestamp);
         // Domain rejects are atomic by the existing book contract. Unexpected
         // failures are never acknowledged, and all future operations fail closed.
         CommandReceipt result{sequence + 1, std::nullopt};
-        try { result = apply(d, sequence + 1); }
+        try { result = decide(d, sequence + 1); }
         catch (const std::invalid_argument&) { throw; }
         catch (const std::overflow_error&) { throw; }
         catch (...) { ok = false; throw; }
         try {
+            const auto bytes = frame(sequence + 1, command, timestamp,
+                outcomes ? std::optional{result.outcome} : std::nullopt);
             file.append(bytes);
             const auto it = entries.emplace(d.command_id, Entry{std::move(command), result, timestamp}).first;
             ordered.push_back(&it->second);
@@ -277,9 +301,9 @@ DurableExchange::DurableExchange(const std::filesystem::path& p, JournalMode m, 
 }
 DurableExchange::DurableExchange(const std::filesystem::path& p, JournalMode m, const std::string& epoch, JournalFormat format, std::size_t limit) {
     validate_journal_epoch(epoch);
-    if (format != JournalFormat::EpochV2 && format != JournalFormat::TimestampedV3)
+    if (format != JournalFormat::EpochV2 && format != JournalFormat::TimestampedV3 && format != JournalFormat::OutcomesV4)
         throw std::invalid_argument("Unsupported journal format");
-    impl_ = std::make_unique<Impl>(p, m, limit, epoch, format == JournalFormat::TimestampedV3);
+    impl_ = std::make_unique<Impl>(p, m, limit, epoch, format != JournalFormat::EpochV2, format == JournalFormat::OutcomesV4);
 }
 DurableExchange::~DurableExchange() = default;
 bool DurableExchange::healthy() const noexcept { return impl_->ok; }
@@ -304,6 +328,9 @@ DeliveryBatch DurableExchange::delivery_after(const std::string& epoch, std::int
         DeliveryRecord record{entry.receipt.command_sequence, d.command_id,
             d.type == 'S' ? DeliveryKind::Submit : d.type == 'C' ? DeliveryKind::Cancel : DeliveryKind::RegisterBook,
             d.key, d.request.order_id, d.request.account_id, std::nullopt, std::nullopt, 0, 0, {}};
+        record.outcome = entry.receipt.outcome;
+        // Even a rejected submission carries its full immutable order payload.
+        if (d.type == 'S') record.request = d.request;
         if (entry.receipt.submission) {
             const auto& sub = *entry.receipt.submission;
             record.request = d.request;

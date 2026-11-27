@@ -64,3 +64,12 @@ if(BUILD_TESTING)
         add_test(NAME exchange_timestamp_${case} COMMAND quantdesk_exchange_timestamp_tests ${case})
     endforeach()
 endif()
+
+# M06: opt-in V4 durable domain outcomes.
+if(BUILD_TESTING)
+    add_executable(quantdesk_exchange_outcome_tests tests/recovery/outcome_tests.cpp)
+    target_link_libraries(quantdesk_exchange_outcome_tests PRIVATE quantdesk_exchange_domain)
+    foreach(case IN ITEMS retry atomic overflow cancel failed_append isolation corruption malformed)
+        add_test(NAME exchange_outcome_${case} COMMAND quantdesk_exchange_outcome_tests ${case})
+    endforeach()
+endif()
