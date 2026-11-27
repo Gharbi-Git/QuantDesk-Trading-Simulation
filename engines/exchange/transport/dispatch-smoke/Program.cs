@@ -26,6 +26,8 @@ var book = new BookKey { SessionId = session.ToString("D"), InstrumentId = instr
 var sellOne = Guid.NewGuid(); var sellTwo = Guid.NewGuid(); var buy = Guid.NewGuid();
 var sellOneCommand = Guid.NewGuid(); var sellTwoCommand = Guid.NewGuid(); var buyCommand = Guid.NewGuid();
 var dispatchTableReady = false;
+var cancelTableReady = false;
+var cancelCommand = Guid.NewGuid();
 var reserve = new PortfolioReservationService(options);
 var settle = new ReservedEquitySettlementService(options);
 var provisioned = false;
@@ -105,8 +107,15 @@ try
         Check((await new DevelopmentOrderDispatcher(client, options).DispatchAsync(buyCommand)).CommandSequence == 4, "lost reply recovers exact accepted command");
         Check((await client.GetStatusAsync()).HighWatermark == 4, "no duplicate journal append");
         Console.WriteLine("PASS: durable intent, owner and funds checks, reservation recovery, concurrent dispatch and lost reply recovery");
-        // Cancellation is still an explicitly authorized test fixture, not a durable cancel dispatcher.
-        await client.CancelOrderAsync(Guid.NewGuid(), book, sellTwo, seller.Id);
+        var canceller = new DevelopmentCancellationDispatcher(client, options);
+        await canceller.ProvisionTestTableAsync();
+        cancelTableReady = true;
+        await MustReject(() => canceller.PrepareAsync(buyer.OwnerUserId, cancelCommand, sellTwo), "No accepted submission for cancellation owner.");
+        await canceller.PrepareAsync(seller.OwnerUserId, cancelCommand, sellTwo);
+        await MustReject(() => canceller.PrepareAsync(seller.OwnerUserId, cancelCommand, sellOne), "Cancellation owner or order conflict.");
+        try { await new DevelopmentCancellationDispatcher(new LoseCancelReply(client), options).DispatchAsync(cancelCommand); throw new Exception("Expected lost cancellation reply"); }
+        catch (IOException e) when (e.Message == "Simulated lost cancellation reply") { }
+        Check((await client.GetStatusAsync()).HighWatermark == 5, "cancel committed once");
         var consumer = new ExchangeDeliveryConsumer(client, options);
         // Two separate consumers must serialize against the same persistent cursor.
         var concurrent = await Task.WhenAll(consumer.ProcessNextAsync(), new ExchangeDeliveryConsumer(client, options).ProcessNextAsync());
@@ -122,6 +131,17 @@ try
             first.SellerAccountId, first.InstrumentId, first.Quantity, first.ExecutionPrice, first.BuyOrderId, first.SellOrderId, first.SessionId));
         Check(!prior.AlreadySettled, "first fill committed before checkpoint");
         Check((await new ExchangeDeliveryConsumer(client, options).ProcessNextAsync()).LastCommandSequence == 4, "retry completes both fills");
+        // Accepted engine cancel with missing durable backend receipt must not release shares.
+        await MustReject(() => consumer.ProcessNextAsync(), "Delivery has no durably accepted authorization.");
+        await using (var db = new QuantDeskDbContext(options))
+        {
+            var hold = await db.EquityOrderReservations.AsNoTracking().SingleAsync(r => r.OrderId == sellTwo);
+            Check(hold.ReservedShares == 60 && hold.Status == EquityReservationStatus.Active, "lost cancellation reply preserves remaining shares");
+        }
+        var cancelReceipts = await Task.WhenAll(canceller.DispatchAsync(cancelCommand), new DevelopmentCancellationDispatcher(client, options).DispatchAsync(cancelCommand));
+        Check(cancelReceipts.All(x => x.CommandSequence == 5), "concurrent cancellation retry returns same receipt");
+        Check((await client.GetStatusAsync()).HighWatermark == 5, "no duplicate cancellation append");
+        Console.WriteLine("PASS: durable cancel ownership, lost reply, authorization gate and concurrent retry");
         // Same replay window for cancellation. Release is idempotent.
         await reserve.ReleaseConfirmedAsync(seller.OwnerUserId, seller.Id, session, sellTwo);
         Check((await consumer.ProcessNextAsync()).LastCommandSequence == 5, "cancellation replay advances cursor");
@@ -132,33 +152,51 @@ try
     {
         var recovered = await new DevelopmentOrderDispatcher(server.Client, options).DispatchAsync(buyCommand);
         Check(recovered.CommandSequence == 4, "accepted durable dispatch survives engine restart and settlement");
+        Check((await new DevelopmentCancellationDispatcher(server.Client, options).DispatchAsync(cancelCommand)).CommandSequence == 5, "cancel recovered after restart");
         var consumer = new ExchangeDeliveryConsumer(server.Client, options);
         var end = await consumer.ProcessNextAsync();
         Check(!end.AppliedCommand && end.LastCommandSequence == 5 && end.HighWatermark == 5, "persistent cursor after restart");
         await CheckAccounting();
+        // Engine rejects an unknown book. No durable negative receipt exists;
+        // hold remains intact until an explicitly approved reconciliation protocol exists.
+        var rejectedCommand = Guid.NewGuid(); var rejectedOrder = Guid.NewGuid();
+        var retry = new DevelopmentOrderDispatcher(server.Client, options);
+        await retry.PrepareAsync(buyer.OwnerUserId, rejectedCommand,
+            ExchangeWire.CreateOrder(session, instrument + "-UNKNOWN", rejectedOrder, buyer.Id, Side.Buy, 1m, 1));
+        try { await retry.DispatchAsync(rejectedCommand); throw new Exception("Expected unknown book rejection"); }
+        catch (Grpc.Core.RpcException) { }
+        Check(await server.Client.GetCommandReceiptAsync(rejectedCommand) is null, "no negative receipt");
+        Check((await server.Client.GetStatusAsync()).HighWatermark == 5, "rejected command not appended");
+        await using (var rejectedDb = new QuantDeskDbContext(options))
+        {
+            var hold = await rejectedDb.EquityOrderReservations.AsNoTracking().SingleAsync(r => r.OrderId == rejectedOrder);
+            Check(hold.ReservedCash == 1m && hold.Status == EquityReservationStatus.Active, "rejection preserves hold");
+        }
+        Console.WriteLine("PASS: unrecorded engine rejection preserves reservation");
         // Negative fixture: deliberately bypass reservation only in isolated test.
         // Consumer must refuse this journal record and leave cursor unchanged.
         await server.Client.SubmitOrderAsync(Guid.NewGuid(), ExchangeWire.CreateOrder(session, instrument, Guid.NewGuid(), buyer.Id, Side.Buy, 1m, 1));
         for (var i = 0; i < 2; i++)
         {
             try { await consumer.ProcessNextAsync(); throw new Exception("Missing reservation was accepted"); }
-            catch (InvalidOperationException e) when (e.Message == "Delivery has no matching reservation.") { }
+            catch (InvalidOperationException e) when (e.Message == "Delivery has no durably accepted authorization.") { }
         }
         await using var db = new QuantDeskDbContext(options);
         await db.Database.OpenConnectionAsync();
         await using var query = new NpgsqlCommand("SELECT last_command_sequence FROM qd_exchange_dev_checkpoints WHERE journal_epoch = @epoch", (NpgsqlConnection)db.Database.GetDbConnection());
         query.Parameters.AddWithValue("epoch", epoch);
         Check((long)(await query.ExecuteScalarAsync())! == 5, "failed record never advances cursor");
-        await CheckAccounting();
-        Console.WriteLine("PASS: engine restart, persistent cursor, missing reservation fails closed");
+        await CheckAccounting(rejectedOrder);
+        Console.WriteLine("PASS: engine restart, persistent cursor, unauthorized delivery fails closed");
     }
-    Console.WriteLine("DURABLE ORDER DISPATCH SMOKE PASSED");
+    Console.WriteLine("DURABLE SUBMISSION AND CANCELLATION SMOKE PASSED");
 }
 finally
 {
     try
     {
         await using var db = new QuantDeskDbContext(options);
+        if (cancelTableReady) await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM qd_exchange_dev_cancellations WHERE journal_epoch = {epoch}");
         if (dispatchTableReady) await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM qd_exchange_dev_submissions WHERE journal_epoch = {epoch}");
         if (checkpointTableReady) await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM qd_exchange_dev_checkpoints WHERE journal_epoch = {epoch}");
         if (provisioned)
@@ -177,7 +215,7 @@ finally
     finally { Directory.Delete(directory, recursive: true); }
 }
 
-async Task CheckAccounting()
+async Task CheckAccounting(Guid? retainedOrder = null)
 {
     await using var db = new QuantDeskDbContext(options);
     var b = await db.ComptesTrading.AsNoTracking().SingleAsync(a => a.Id == buyer.Id);
@@ -188,7 +226,7 @@ async Task CheckAccounting()
     Check(await db.EquitySettlements.CountAsync(e => e.BuyerAccountId == b.Id && e.SellerAccountId == s.Id) == 2, "two settlement receipts");
     Check(await db.CashJournal.CountAsync(j => j.CompteTradingId == b.Id || j.CompteTradingId == s.Id) == 6, "two initial and four fill ledger entries");
     var reservations = await db.EquityOrderReservations.AsNoTracking().Where(r => r.AccountId == b.Id || r.AccountId == s.Id).ToListAsync();
-    Check(reservations.Count == 3 && reservations.All(r => r.ReservedCash == 0 && r.ReservedShares == 0), "all reservations exhausted/released");
+    Check(reservations.Count == (retainedOrder.HasValue ? 4 : 3) && reservations.Where(r => r.OrderId != retainedOrder).All(r => r.ReservedCash == 0 && r.ReservedShares == 0), "all reservations exhausted/released");
     Check(reservations.Single(r => r.OrderId == sellTwo).Status == EquityReservationStatus.Released && reservations.Single(r => r.OrderId == sellTwo).FilledQuantity == 10, "partial seller cancellation");
 }
 static void Check(bool condition, string label) { if (!condition) throw new InvalidOperationException("FAIL: " + label); }
@@ -210,6 +248,20 @@ sealed class LoseSubmitReply(Client inner) : Client
         throw new IOException("Simulated lost accepted reply");
     }
     public Task<AcceptedReceipt> CancelOrderAsync(Guid id, BookKey book, Guid order, Guid account, CancellationToken ct = default) => inner.CancelOrderAsync(id, book, order, account, ct);
+    public Task<AcceptedReceipt?> GetCommandReceiptAsync(Guid id, CancellationToken ct = default) => inner.GetCommandReceiptAsync(id, ct);
+    public Task<DeliveryBatch> GetDeliveryBatchAsync(long after, uint max = 64, CancellationToken ct = default) => inner.GetDeliveryBatchAsync(after, max, ct);
+}
+sealed class LoseCancelReply(Client inner) : Client
+{
+    public Guid JournalEpoch => inner.JournalEpoch;
+    public Task<StatusReply> GetStatusAsync(CancellationToken ct = default) => inner.GetStatusAsync(ct);
+    public Task<AcceptedReceipt> RegisterBookAsync(Guid id, BookKey book, CancellationToken ct = default) => inner.RegisterBookAsync(id, book, ct);
+    public Task<AcceptedReceipt> SubmitOrderAsync(Guid id, EquityLimitOrder order, CancellationToken ct = default) => inner.SubmitOrderAsync(id, order, ct);
+    public async Task<AcceptedReceipt> CancelOrderAsync(Guid id, BookKey book, Guid order, Guid account, CancellationToken ct = default)
+    {
+        await inner.CancelOrderAsync(id, book, order, account, ct);
+        throw new IOException("Simulated lost cancellation reply");
+    }
     public Task<AcceptedReceipt?> GetCommandReceiptAsync(Guid id, CancellationToken ct = default) => inner.GetCommandReceiptAsync(id, ct);
     public Task<DeliveryBatch> GetDeliveryBatchAsync(long after, uint max = 64, CancellationToken ct = default) => inner.GetDeliveryBatchAsync(after, max, ct);
 }

@@ -17,12 +17,14 @@ namespace QuantDesk.Api.ExchangeIntegration;
 public sealed class ExchangeDeliveryConsumer
 {
     private readonly IExchangeClient _exchange;
+    private readonly bool _requireDurableAuthorization;
     private readonly DbContextOptions<QuantDeskDbContext> _options;
     private readonly ReservedEquitySettlementService _settlement;
     private readonly PortfolioReservationService _reservations;
 
-    public ExchangeDeliveryConsumer(IExchangeClient exchange, DbContextOptions<QuantDeskDbContext> options)
+    public ExchangeDeliveryConsumer(IExchangeClient exchange, DbContextOptions<QuantDeskDbContext> options, bool requireDurableAuthorization = true)
     {
+        _requireDurableAuthorization = requireDurableAuthorization;
         _exchange = exchange;
         _options = options;
         ExchangeWire.ValidateEpoch(exchange.JournalEpoch);
@@ -56,6 +58,7 @@ public sealed class ExchangeDeliveryConsumer
             return new(cursor, batch.HighWatermark, false);
         }
         var record = batch.Records[0];
+        if (_requireDurableAuthorization) await VerifyAuthorizationAsync(connection, tx, record, ct);
         await ApplyAsync(record, ct);
         // This is deliberately a separate transaction from M07 effects. If it
         // fails after a fill commits, retry that command; never skip its remainder.
@@ -66,6 +69,38 @@ public sealed class ExchangeDeliveryConsumer
         if (await update.ExecuteNonQueryAsync(ct) != 1) throw new InvalidOperationException("Checkpoint changed unexpectedly.");
         await tx.CommitAsync(ct);
         return new(record.CommandSequence, batch.HighWatermark, true);
+    }
+
+    // Check intent and matching accepted sequence before any financial effect.
+    // A lost response can leave the intent pending; recover it through the
+    // appropriate dispatcher, then retry this unchanged checkpoint.
+    private async Task VerifyAuthorizationAsync(NpgsqlConnection c, NpgsqlTransaction tx, DeliveryRecord record, CancellationToken ct)
+    {
+        if (record.EventCase == DeliveryRecord.EventOneofCase.Registered) return; // trusted fixture only
+        var cancellation = record.EventCase == DeliveryRecord.EventOneofCase.Cancelled;
+        var sql = cancellation ? """
+            SELECT s.payload FROM qd_exchange_dev_cancellations x
+            JOIN qd_exchange_dev_submissions s ON s.order_id=x.order_id AND s.journal_epoch=x.journal_epoch AND s.owner_user_id=x.owner_user_id
+            WHERE x.command_id=@id AND x.journal_epoch=@epoch AND x.accepted_sequence=@seq AND s.phase=2 AND s.accepted_sequence<@seq
+            """ : """
+            SELECT payload FROM qd_exchange_dev_submissions
+            WHERE command_id=@id AND journal_epoch=@epoch AND phase=2 AND accepted_sequence=@seq
+            """;
+        await using var q = new NpgsqlCommand(sql,c,tx);
+        q.Parameters.AddWithValue("id", ExchangeWire.ParseId(record.CommandId));
+        q.Parameters.AddWithValue("epoch", _exchange.JournalEpoch);
+        q.Parameters.AddWithValue("seq",record.CommandSequence);
+        if (await q.ExecuteScalarAsync(ct) is not byte[] bytes)
+            throw new InvalidOperationException("Delivery has no durably accepted authorization.");
+        var order = EquityLimitOrder.Parser.ParseFrom(bytes);
+        ExchangeWire.ValidateOrder(order);
+        if (cancellation)
+        {
+            if (!record.Cancelled.Book.Equals(order.Book) || record.Cancelled.AccountId != order.AccountId || record.Cancelled.OrderId != order.OrderId)
+                throw new InvalidDataException("Cancellation authorization payload mismatch.");
+        }
+        else if (!record.Submitted.Order.Equals(order))
+            throw new InvalidDataException("Submission authorization payload mismatch.");
     }
 
     private async Task ApplyAsync(DeliveryRecord record, CancellationToken ct)

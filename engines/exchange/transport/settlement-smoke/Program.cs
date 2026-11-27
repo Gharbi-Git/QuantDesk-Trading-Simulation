@@ -66,9 +66,9 @@ try
         await client.SubmitOrderAsync(Guid.NewGuid(), ExchangeWire.CreateOrder(session, instrument, sellTwo, seller.Id, Side.Sell, 149m, 70));
         await client.SubmitOrderAsync(Guid.NewGuid(), ExchangeWire.CreateOrder(session, instrument, buy, buyer.Id, Side.Buy, 150m, 40));
         await client.CancelOrderAsync(Guid.NewGuid(), book, sellTwo, seller.Id);
-        var consumer = new ExchangeDeliveryConsumer(client, options);
+        var consumer = new ExchangeDeliveryConsumer(client, options, requireDurableAuthorization: false);
         // Two separate consumers must serialize against the same persistent cursor.
-        var concurrent = await Task.WhenAll(consumer.ProcessNextAsync(), new ExchangeDeliveryConsumer(client, options).ProcessNextAsync());
+        var concurrent = await Task.WhenAll(consumer.ProcessNextAsync(), new ExchangeDeliveryConsumer(client, options, requireDurableAuthorization: false).ProcessNextAsync());
         Check(concurrent.Select(x => x.LastCommandSequence).Order().SequenceEqual(new long[] { 1, 2 }), "serialized cursor updates");
         Check((await consumer.ProcessNextAsync()).LastCommandSequence == 3, "resting orders consumed");
         var delivery = await client.GetDeliveryBatchAsync(3, 1);
@@ -80,7 +80,7 @@ try
         var prior = await settle.SettleAsync(new TrustedReservedEquityExecution(first.ExecutionId, first.BuyerAccountId,
             first.SellerAccountId, first.InstrumentId, first.Quantity, first.ExecutionPrice, first.BuyOrderId, first.SellOrderId, first.SessionId));
         Check(!prior.AlreadySettled, "first fill committed before checkpoint");
-        Check((await new ExchangeDeliveryConsumer(client, options).ProcessNextAsync()).LastCommandSequence == 4, "retry completes both fills");
+        Check((await new ExchangeDeliveryConsumer(client, options, requireDurableAuthorization: false).ProcessNextAsync()).LastCommandSequence == 4, "retry completes both fills");
         // Same replay window for cancellation. Release is idempotent.
         await reserve.ReleaseConfirmedAsync(seller.OwnerUserId, seller.Id, session, sellTwo);
         Check((await consumer.ProcessNextAsync()).LastCommandSequence == 5, "cancellation replay advances cursor");
@@ -89,7 +89,7 @@ try
     }
     await using (var server = await DevServer.Start(Path.GetFullPath(args[0]), "--open-dev-journal", journal, epoch.ToString("D")))
     {
-        var consumer = new ExchangeDeliveryConsumer(server.Client, options);
+        var consumer = new ExchangeDeliveryConsumer(server.Client, options, requireDurableAuthorization: false);
         var end = await consumer.ProcessNextAsync();
         Check(!end.AppliedCommand && end.LastCommandSequence == 5 && end.HighWatermark == 5, "persistent cursor after restart");
         await CheckAccounting();
