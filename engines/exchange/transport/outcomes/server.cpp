@@ -5,6 +5,11 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <fstream>
+#include <iterator>
+#include <grpc/grpc_security_constants.h>
+#include <grpcpp/security/auth_context.h>
+#include <grpcpp/security/server_credentials.h>
 namespace w=quantdesk::v1::exchange;
 namespace d=quantdesk::exchange;
 namespace a=qd_outcomes;
@@ -60,26 +65,77 @@ template<class F> Status handle(F f){try{f();return Status::OK;}catch(const a::F
     switch(e.code){case a::Fault::Invalid:code=StatusCode::INVALID_ARGUMENT;break;case a::Fault::WrongEpoch:case a::Fault::Rejected:code=StatusCode::FAILED_PRECONDITION;break;case a::Fault::Conflict:code=StatusCode::ALREADY_EXISTS;break;case a::Fault::Capacity:code=StatusCode::RESOURCE_EXHAUSTED;break;case a::Fault::Unavailable:break;}
     return Status(code,e.what());
 }catch(...){return Status(StatusCode::UNAVAILABLE,"Operation outcome unknown; recover or retry identical command");}}
+// Compare PEM bodies, ignoring line-ending and wrapping differences only.
+std::string canonical_pem(std::string text){
+    std::string result; for(char c:text)if(c!='\r'&&c!='\n'&&c!=' '&&c!='\t')result+=c;
+    return result;
+}
+std::string read_pem(const std::filesystem::path& file){
+    std::ifstream in(file,std::ios::binary);if(!in)throw std::runtime_error("Missing TLS credential file");
+    std::string s((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+    if(s.empty()||s.size()>64*1024)throw std::runtime_error("Invalid TLS credential file size");
+    return s;
+}
+struct TlsConfig {
+    std::shared_ptr<grpc::ServerCredentials> credentials;
+    std::string allowed_peer;
+};
+TlsConfig tls_config(const std::filesystem::path& dir){
+    grpc::SslServerCredentialsOptions options;
+    options.pem_root_certs=read_pem(dir/"client-ca.pem");
+    options.pem_key_cert_pairs.push_back({read_pem(dir/"server-key.pem"),read_pem(dir/"server.pem")});
+    options.client_certificate_request=GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY;
+    auto credentials=grpc::SslServerCredentials(options);
+    if(!credentials)throw std::runtime_error("TLS credentials unavailable");
+    auto peer=canonical_pem(read_pem(dir/"backend.pem"));
+    if(peer.find("-----BEGINCERTIFICATE-----")!=0||peer.find("-----ENDCERTIFICATE-----")==std::string::npos)
+        throw std::runtime_error("Invalid pinned backend certificate");
+    return {std::move(credentials),std::move(peer)};
+}
 class Service final:public v::ExchangeService::Service{
     a::Adapter& adapter_;
+    const std::string allowed_peer_;
+    template<class F> Status authorized(grpc::ServerContext* ctx,F f){
+        if(!allowed_peer_.empty()){
+            auto auth=ctx->auth_context();
+            if(!auth||!auth->IsPeerAuthenticated())return Status(StatusCode::UNAUTHENTICATED,"Client certificate required");
+            auto cert=auth->FindPropertyValues(GRPC_X509_PEM_CERT_PROPERTY_NAME);
+            if(cert.size()!=1||canonical_pem(std::string(cert[0].data(),cert[0].size()))!=allowed_peer_)
+                return Status(StatusCode::PERMISSION_DENIED,"Backend certificate not authorized");
+        }
+        return handle(f);
+    }
 public:
-    explicit Service(a::Adapter& a):adapter_(a){}
-    Status GetStatus(grpc::ServerContext*,const w::StatusRequest*,v::StatusReply* out)override{return handle([&]{auto s=adapter_.status();out->set_journal_epoch(s.epoch);out->set_healthy(true);out->set_journal_format(4);out->set_high_watermark(s.high);});}
-    Status RegisterBook(grpc::ServerContext*,const w::RegisterBookRequest* r,v::CommandReceipt* out)override{return handle([&]{need(r->has_identity()&&r->has_book());auto i=identity(r->identity());receipt(adapter_,out,i,adapter_.register_book(i,key(r->book())));});}
-    Status SubmitOrder(grpc::ServerContext*,const w::SubmitOrderRequest* r,v::CommandReceipt* out)override{return handle([&]{need(r->has_identity()&&r->has_order()&&r->order().has_book());auto i=identity(r->identity());const auto& p=r->order();auto b=key(p.book());receipt(adapter_,out,i,adapter_.submit(i,{p.order_id(),p.account_id(),b.session_id,b.instrument_id,side(p.side()),p.limit_price_units(),p.quantity()}));});}
-    Status CancelOrder(grpc::ServerContext*,const w::CancelOrderRequest* r,v::CommandReceipt* out)override{return handle([&]{need(r->has_identity()&&r->has_book());auto i=identity(r->identity());receipt(adapter_,out,i,adapter_.cancel(i,key(r->book()),r->order_id(),r->account_id()));});}
-    Status GetCommandReceipt(grpc::ServerContext*,const w::ReceiptRequest* r,v::ReceiptReply* out)override{return handle([&]{need(r->has_identity());auto i=identity(r->identity());auto x=adapter_.receipt(i);if(x)receipt(adapter_,out->mutable_receipt(),i,*x);});}
-    Status GetDeliveryBatch(grpc::ServerContext*,const w::DeliveryRequest* r,v::DeliveryBatch* out)override{return handle([&]{auto page=adapter_.delivery(r->expected_journal_epoch(),r->after_command_sequence(),r->max_commands());out->set_journal_epoch(page.journal_epoch);out->set_high_watermark(page.high_watermark);for(const auto& x:page.records)record(out->add_records(),x);if(out->ByteSizeLong()>message_limit){out->Clear();throw a::Failure(a::Fault::Capacity,"Full page exceeds dev byte limit; request a smaller page, never skip a command");}});}
+    explicit Service(a::Adapter& a,std::string peer):adapter_(a),allowed_peer_(std::move(peer)){}
+    Status GetStatus(grpc::ServerContext* ctx,const w::StatusRequest*,v::StatusReply* out)override{return authorized(ctx,[&]{auto s=adapter_.status();out->set_journal_epoch(s.epoch);out->set_healthy(true);out->set_journal_format(4);out->set_high_watermark(s.high);});}
+    Status RegisterBook(grpc::ServerContext* ctx,const w::RegisterBookRequest* r,v::CommandReceipt* out)override{return authorized(ctx,[&]{need(r->has_identity()&&r->has_book());auto i=identity(r->identity());receipt(adapter_,out,i,adapter_.register_book(i,key(r->book())));});}
+    Status SubmitOrder(grpc::ServerContext* ctx,const w::SubmitOrderRequest* r,v::CommandReceipt* out)override{return authorized(ctx,[&]{need(r->has_identity()&&r->has_order()&&r->order().has_book());auto i=identity(r->identity());const auto& p=r->order();auto b=key(p.book());receipt(adapter_,out,i,adapter_.submit(i,{p.order_id(),p.account_id(),b.session_id,b.instrument_id,side(p.side()),p.limit_price_units(),p.quantity()}));});}
+    Status CancelOrder(grpc::ServerContext* ctx,const w::CancelOrderRequest* r,v::CommandReceipt* out)override{return authorized(ctx,[&]{need(r->has_identity()&&r->has_book());auto i=identity(r->identity());receipt(adapter_,out,i,adapter_.cancel(i,key(r->book()),r->order_id(),r->account_id()));});}
+    Status GetCommandReceipt(grpc::ServerContext* ctx,const w::ReceiptRequest* r,v::ReceiptReply* out)override{return authorized(ctx,[&]{need(r->has_identity());auto i=identity(r->identity());auto x=adapter_.receipt(i);if(x)receipt(adapter_,out->mutable_receipt(),i,*x);});}
+    Status GetDeliveryBatch(grpc::ServerContext* ctx,const w::DeliveryRequest* r,v::DeliveryBatch* out)override{return authorized(ctx,[&]{auto page=adapter_.delivery(r->expected_journal_epoch(),r->after_command_sequence(),r->max_commands());out->set_journal_epoch(page.journal_epoch);out->set_high_watermark(page.high_watermark);for(const auto& x:page.records)record(out->add_records(),x);if(out->ByteSizeLong()>message_limit){out->Clear();throw a::Failure(a::Fault::Capacity,"Full page exceeds dev byte limit; request a smaller page, never skip a command");}});}
 };
 struct Running {
     Service service;int port=0;std::unique_ptr<grpc::Server> server;
-    explicit Running(a::Adapter& a):service(a){grpc::ServerBuilder b;b.SetMaxReceiveMessageSize(64*1024);b.SetMaxSendMessageSize(message_limit);b.AddListeningPort("127.0.0.1:0",grpc::InsecureServerCredentials(),&port);b.RegisterService(&service);server=b.BuildAndStart();qt::require(server&&port>0,"Server start failed");}
+    explicit Running(a::Adapter& a,const TlsConfig& tls):service(a,tls.allowed_peer){
+        grpc::ServerBuilder b;b.SetMaxReceiveMessageSize(64*1024);b.SetMaxSendMessageSize(message_limit);
+        b.AddListeningPort("127.0.0.1:0",tls.credentials,&port);b.RegisterService(&service);
+        server=b.BuildAndStart();qt::require(server&&port>0,"Server start failed");
+    }
     ~Running(){if(server){server->Shutdown();server->Wait();}}
-    auto stub(){grpc::ChannelArguments args;args.SetMaxReceiveMessageSize(message_limit);return v::ExchangeService::NewStub(grpc::CreateCustomChannel("127.0.0.1:"+std::to_string(port),grpc::InsecureChannelCredentials(),args));}
 };
 }
 int main(int argc,char** argv){try{
-    if(argc!=4||(std::string(argv[1])!="--create-dev-journal"&&std::string(argv[1])!="--open-dev-journal")){std::cerr<<"Usage: qd_exchange_outcomes --create-dev-journal|--open-dev-journal <isolated-test-file> <UUIDv4>\n";return 2;}
-    a::Adapter adapter(argv[2],std::string(argv[1])=="--create-dev-journal"?d::JournalMode::CreateNew:d::JournalMode::OpenExisting,argv[3]);Running server(adapter);
-    std::cout<<"DEV V2 ONLY: unencrypted exchange at 127.0.0.1:"<<server.port<<"; journal V4"<<std::endl;server.server->Wait();return 0;
+    const std::string mode=argc>1?argv[1]:"";
+    const bool secure=mode=="--create-secure-journal"||mode=="--open-secure-journal";
+    const bool plain=mode=="--create-dev-journal"||mode=="--open-dev-journal";
+    if((!secure&&!plain)||(secure&&argc!=5)||(plain&&argc!=4)){
+        std::cerr<<"Usage: qd_exchange_outcomes --create-secure-journal|--open-secure-journal <isolated-test-file> <UUIDv4> <TLS-directory>\n"
+                 <<"Legacy plaintext test modes: --create-dev-journal|--open-dev-journal <isolated-test-file> <UUIDv4>\n";return 2;
+    }
+    const auto tls=secure?tls_config(argv[4]):TlsConfig{grpc::InsecureServerCredentials(),{}};
+    const bool create=mode=="--create-secure-journal"||mode=="--create-dev-journal";
+    a::Adapter adapter(argv[2],create?d::JournalMode::CreateNew:d::JournalMode::OpenExisting,argv[3]);
+    Running server(adapter,tls);
+    std::cout<<(secure?"MTLS V2 ONLY: authenticated exchange at 127.0.0.1:":"DEV V2 ONLY: unencrypted exchange at 127.0.0.1:")<<server.port<<"; journal V4"<<std::endl;
+    server.server->Wait();return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

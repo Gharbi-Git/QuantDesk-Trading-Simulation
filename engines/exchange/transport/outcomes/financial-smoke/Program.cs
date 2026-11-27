@@ -189,17 +189,20 @@ sealed class DevServer : IAsyncDisposable
     private readonly Process process;
     public OutcomeExchangeClient Client {get;}
     public int Port {get;}
-    private DevServer(Process p,int port,Guid epoch){process=p;Port=port;Client=new(port,epoch);}
+    private DevServer(Process p,int port,Guid epoch,string? tls){process=p;Port=port;Client=tls is null?new(port,epoch):new(OutcomeTlsOptions.FromDirectory(tls),port,epoch);}
     public static async Task<DevServer> Start(string exe,string mode,string file,Guid epoch)
     {
         var s=new ProcessStartInfo(exe){UseShellExecute=false,RedirectStandardOutput=true,CreateNoWindow=true};
-        s.ArgumentList.Add(mode);s.ArgumentList.Add(file);s.ArgumentList.Add(epoch.ToString("D"));
+        var tls=Environment.GetEnvironmentVariable("QD_TEST_MTLS_DIRECTORY");
+        if(tls is not null && !Directory.Exists(tls))throw new InvalidOperationException("Missing requested TLS directory");
+        s.ArgumentList.Add(tls is null?mode:mode.Replace("-dev-","-secure-"));s.ArgumentList.Add(file);s.ArgumentList.Add(epoch.ToString("D"));
+        if(tls is not null)s.ArgumentList.Add(tls);
         var p=Process.Start(s)??throw new InvalidOperationException("Native server failed to start");
         try {
             var line=await p.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
-            var match=Regex.Match(line??"",@"^DEV V2 ONLY: unencrypted exchange at 127\.0\.0\.1:(\d+); journal V4$");
+            var match=Regex.Match(line??"",tls is null?@"^DEV V2 ONLY: unencrypted exchange at 127\.0\.0\.1:(\d+); journal V4$":@"^MTLS V2 ONLY: authenticated exchange at 127\.0\.0\.1:(\d+); journal V4$");
             if(!match.Success||!int.TryParse(match.Groups[1].Value,out var port))throw new InvalidOperationException("Unexpected server startup: "+line);
-            return new(p,port,epoch);
+            return new(p,port,epoch,tls);
         } catch {await Stop(p);throw;}
     }
     public async ValueTask DisposeAsync(){Client.Dispose();await Stop(process);}

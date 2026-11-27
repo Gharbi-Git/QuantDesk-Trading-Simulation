@@ -6,12 +6,13 @@ using V = QuantDesk.Contracts.V2.Exchange;
 namespace QuantDesk.Exchange.Outcomes.Client;
 
 // Explicit V2 API. Never convert a rejected decision to a V1 AcceptedReceipt.
-// Trusted, plaintext loopback development transport only.
+// Legacy plaintext constructor is for isolated tests only. Secure callers must supply TLS credentials.
 public sealed class OutcomeExchangeClient : IDisposable
 {
     private readonly GrpcChannel channel;
     private readonly V.ExchangeService.ExchangeServiceClient stub;
     private readonly TimeSpan timeout;
+    private readonly OutcomeTlsConnection? tlsConnection;
     public Guid JournalEpoch { get; }
     private string Epoch => ExchangeWire.Id(JournalEpoch);
     public OutcomeExchangeClient(int port, Guid expectedEpoch, TimeSpan? timeout = null)
@@ -22,6 +23,25 @@ public sealed class OutcomeExchangeClient : IDisposable
         if (this.timeout <= TimeSpan.Zero || this.timeout > TimeSpan.FromMinutes(2)) throw new ArgumentOutOfRangeException(nameof(timeout));
         channel = GrpcChannel.ForAddress($"http://127.0.0.1:{port}", new GrpcChannelOptions { MaxReceiveMessageSize = 1024 * 1024, MaxSendMessageSize = 64 * 1024 });
         stub = new(channel);
+    }
+    public OutcomeExchangeClient(OutcomeTlsOptions tls, int port, Guid expectedEpoch, TimeSpan? timeout = null)
+    {
+        ArgumentNullException.ThrowIfNull(tls);
+        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
+        ExchangeWire.ValidateEpoch(expectedEpoch); JournalEpoch = expectedEpoch;
+        this.timeout = timeout ?? TimeSpan.FromSeconds(10);
+        if (this.timeout <= TimeSpan.Zero || this.timeout > TimeSpan.FromMinutes(2)) throw new ArgumentOutOfRangeException(nameof(timeout));
+        tlsConnection = new OutcomeTlsConnection(tls);
+        try
+        {
+            channel = GrpcChannel.ForAddress($"https://127.0.0.1:{port}", new GrpcChannelOptions
+            {
+                HttpHandler = tlsConnection.Handler, DisposeHttpClient = true,
+                MaxReceiveMessageSize = 1024 * 1024, MaxSendMessageSize = 64 * 1024
+            });
+            stub = new(channel);
+        }
+        catch { tlsConnection.Dispose(); throw; }
     }
     private DateTime Deadline() => DateTime.UtcNow.Add(timeout);
     private W.CommandIdentity Identity(Guid id) => new() { ExpectedJournalEpoch = Epoch, CommandId = ExchangeWire.Id(id) };
@@ -75,7 +95,7 @@ public sealed class OutcomeExchangeClient : IDisposable
         OutcomeWire.ValidateDelivery(r, JournalEpoch, after, maxCommands);
         return r;
     }
-    public void Dispose() => channel.Dispose();
+    public void Dispose() { try { channel.Dispose(); } finally { tlsConnection?.Dispose(); } }
 }
 
 public static class OutcomeWire
