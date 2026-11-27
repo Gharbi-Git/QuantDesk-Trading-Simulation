@@ -55,3 +55,12 @@ if(BUILD_TESTING)
         add_test(NAME exchange_delivery_${case} COMMAND quantdesk_exchange_delivery_tests ${case})
     endforeach()
 endif()
+
+# M06: V3 durable UTC execution timestamps.
+if(BUILD_TESTING)
+    add_executable(quantdesk_exchange_timestamp_tests tests/recovery/timestamp_tests.cpp)
+    target_link_libraries(quantdesk_exchange_timestamp_tests PRIVATE quantdesk_exchange_domain)
+    foreach(case IN ITEMS multiple_fills restart_retry persisted_clock legacy_isolation invalid_timestamp failed_append torn_and_crc reject_no_append)
+        add_test(NAME exchange_timestamp_${case} COMMAND quantdesk_exchange_timestamp_tests ${case})
+    endforeach()
+endif()

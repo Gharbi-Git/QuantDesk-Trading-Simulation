@@ -1,0 +1,85 @@
+{
+  "journalEpoch": "b8e3d916-320a-4dc4-80bf-d6f8e4392861",
+  "highWatermark": "4",
+  "records": [
+    {
+      "commandSequence": "1",
+      "commandId": "00000000-0000-4000-8000-000000000101",
+      "registered": {
+        "book": {
+          "sessionId": "00000000-0000-4000-8000-000000000001",
+          "instrumentId": "AAPL"
+        }
+      }
+    },
+    {
+      "commandSequence": "2",
+      "commandId": "00000000-0000-4000-8000-000000000102",
+      "submitted": {
+        "order": {
+          "book": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "instrumentId": "AAPL"
+          },
+          "orderId": "00000000-0000-4000-8000-000000000002",
+          "accountId": "00000000-0000-4000-8000-000000000003",
+          "side": "SIDE_SELL",
+          "limitPriceUnits": "1490000",
+          "quantity": "100"
+        },
+        "state": "ORDER_STATE_ACCEPTED",
+        "filledQuantity": "0",
+        "openQuantity": "100"
+      }
+    },
+    {
+      "commandSequence": "3",
+      "commandId": "00000000-0000-4000-8000-000000000103",
+      "submitted": {
+        "order": {
+          "book": {
+            "sessionId": "00000000-0000-4000-8000-000000000001",
+            "instrumentId": "AAPL"
+          },
+          "orderId": "00000000-0000-4000-8000-000000000004",
+          "accountId": "00000000-0000-4000-8000-000000000005",
+          "side": "SIDE_BUY",
+          "limitPriceUnits": "1500000",
+          "quantity": "40"
+        },
+        "state": "ORDER_STATE_FILLED",
+        "filledQuantity": "40",
+        "openQuantity": "0",
+        "fills": [
+          {
+            "executionId": "d60f0391-476d-549f-83ca-fb184cd07779",
+            "book": {
+              "sessionId": "00000000-0000-4000-8000-000000000001",
+              "instrumentId": "AAPL"
+            },
+            "bookExecutionSequence": "1",
+            "buyOrderId": "00000000-0000-4000-8000-000000000004",
+            "sellOrderId": "00000000-0000-4000-8000-000000000002",
+            "buyerAccountId": "00000000-0000-4000-8000-000000000005",
+            "sellerAccountId": "00000000-0000-4000-8000-000000000003",
+            "executionPriceUnits": "1490000",
+            "quantity": "40",
+            "executionTimeUtcUnixMicros": "1795737600000000"
+          }
+        ]
+      }
+    },
+    {
+      "commandSequence": "4",
+      "commandId": "00000000-0000-4000-8000-000000000104",
+      "cancelled": {
+        "book": {
+          "sessionId": "00000000-0000-4000-8000-000000000001",
+          "instrumentId": "AAPL"
+        },
+        "orderId": "00000000-0000-4000-8000-000000000002",
+        "accountId": "00000000-0000-4000-8000-000000000003"
+      }
+    }
+  ]
+}

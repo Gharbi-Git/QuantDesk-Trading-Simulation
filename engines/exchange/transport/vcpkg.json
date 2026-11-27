@@ -1,0 +1,6 @@
+{
+  "name": "quantdesk-exchange-status",
+  "version-string": "0.1.0",
+  "dependencies": ["protobuf", {"name": "grpc", "features": ["codegen"]}],
+  "builtin-baseline": "c9cd2d02a271c8bc4ddcf1e30997a09f2750c1c2"
+}

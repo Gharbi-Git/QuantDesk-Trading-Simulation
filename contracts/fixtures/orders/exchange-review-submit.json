@@ -1,0 +1,17 @@
+{
+  "identity": {
+    "expectedJournalEpoch": "b8e3d916-320a-4dc4-80bf-d6f8e4392861",
+    "commandId": "00000000-0000-4000-8000-000000000103"
+  },
+  "order": {
+    "book": {
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "instrumentId": "AAPL"
+    },
+    "orderId": "00000000-0000-4000-8000-000000000004",
+    "accountId": "00000000-0000-4000-8000-000000000005",
+    "side": "SIDE_BUY",
+    "limitPriceUnits": "1500000",
+    "quantity": "40"
+  }
+}

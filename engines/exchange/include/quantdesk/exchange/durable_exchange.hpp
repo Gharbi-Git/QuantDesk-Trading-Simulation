@@ -13,10 +13,14 @@ struct CommandReceipt {
     std::optional<SubmitResult> submission;
 };
 enum class JournalMode { CreateNew, OpenExisting };
+// V2 is retained for local historical replay; V3 is required for trading transport.
+enum class JournalFormat { EpochV2, TimestampedV3 };
 enum class DeliveryKind { RegisterBook, Submit, Cancel };
 struct DeliveredFill {
     std::string execution_id;
     Execution execution;
+    // Absent for V2 historical fills. V3 records UTC Unix microseconds.
+    std::optional<std::int64_t> execution_time_utc_unix_micros;
 };
 struct DeliveryRecord {
     std::int64_t command_sequence;
@@ -44,6 +48,10 @@ public:
     // Both CreateNew and OpenExisting must supply the same epoch.
     DurableExchange(const std::filesystem::path& path, JournalMode mode,
                     const std::string& journal_epoch, std::size_t byte_limit = 64 * 1024 * 1024);
+    // Explicit V3 opt-in. Never open an older file as V3 or reuse its epoch.
+    DurableExchange(const std::filesystem::path& path, JournalMode mode,
+                    const std::string& journal_epoch, JournalFormat format,
+                    std::size_t byte_limit = 64 * 1024 * 1024);
     ~DurableExchange();
     DurableExchange(const DurableExchange&) = delete;
     DurableExchange& operator=(const DurableExchange&) = delete;

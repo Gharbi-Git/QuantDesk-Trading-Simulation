@@ -1,6 +1,7 @@
 #include "quantdesk/exchange/durable_exchange.hpp"
 #include "quantdesk/exchange/execution_identity.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -21,10 +22,10 @@
 namespace quantdesk::exchange {
 namespace {
 constexpr std::string_view legacy_header = "QD-JOURNAL-1\n";
-std::string journal_header(const std::string& epoch) {
+std::string journal_header(const std::string& epoch, bool timestamped) {
     if (epoch.empty()) return std::string(legacy_header);
     validate_journal_epoch(epoch);
-    return "QD-JOURNAL-2\n" + epoch + "\n";
+    return std::string(timestamped ? "QD-JOURNAL-3\n" : "QD-JOURNAL-2\n") + epoch + "\n";
 }
 constexpr std::size_t max_record = 2048;
 constexpr std::size_t max_file = 64 * 1024 * 1024;
@@ -149,8 +150,19 @@ std::uint32_t crc(std::string_view s) {
     }
     return ~c;
 }
-std::string frame(std::int64_t sequence, std::string_view command) {
-    std::string body; put(body, static_cast<std::uint64_t>(sequence), 8); body += command;
+// Keep the range representable by the .NET UTC DateTimeOffset consumer.
+constexpr std::uint64_t max_utc_micros = 253402300799999999ULL;
+std::int64_t utc_now_micros() {
+    const auto t = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (t <= 0 || static_cast<std::uint64_t>(t) > max_utc_micros)
+        throw std::runtime_error("UTC clock out of supported range");
+    return static_cast<std::int64_t>(t);
+}
+std::string frame(std::int64_t sequence, std::string_view command, std::optional<std::int64_t> timestamp) {
+    std::string body; put(body, static_cast<std::uint64_t>(sequence), 8);
+    if (timestamp) put(body, static_cast<std::uint64_t>(*timestamp), 8);
+    body += command;
     std::string result; put(result, body.size(), 4); result += body; put(result, crc(body), 4); return result;
 }
 std::string encode(char type, const std::string& command_id, const BookKey& key) {
@@ -183,30 +195,38 @@ Decoded decode(std::string_view s) {
 }
 struct DurableExchange::Impl {
     const std::string epoch;
+    const bool timestamped;
     const std::string header;
     File file;
     Exchange exchange;
-    struct Entry { std::string command; CommandReceipt receipt; };
+    struct Entry { std::string command; CommandReceipt receipt; std::optional<std::int64_t> timestamp; };
     std::map<std::string, Entry> entries;
     // Map nodes are stable; index is rebuilt deterministically on restart.
     std::vector<const Entry*> ordered;
     std::int64_t sequence = 0;
     bool ok = true;
-    Impl(const std::filesystem::path& path, JournalMode mode, std::size_t limit, std::string journal_epoch)
-        : epoch(std::move(journal_epoch)), header(journal_header(epoch)), file(path, mode, limit, header) {
+    Impl(const std::filesystem::path& path, JournalMode mode, std::size_t limit, std::string journal_epoch, bool with_timestamps = false)
+        : epoch(std::move(journal_epoch)), timestamped(with_timestamps),
+          header(journal_header(epoch, timestamped)), file(path, mode, limit, header) {
         auto data = file.read_all(); std::string_view input(data);
         if (!input.starts_with(header)) corrupt();
         input.remove_prefix(header.size());
         while (!input.empty()) {
             const auto n = get(input, 4);
-            if (n < 9 || n > max_record || n > input.size()) corrupt();
+            if (n < (timestamped ? 17u : 9u) || n > max_record || n > input.size()) corrupt();
             auto body = input.substr(0, static_cast<std::size_t>(n)); input.remove_prefix(static_cast<std::size_t>(n));
             if (get(input, 4) != crc(body)) corrupt();
             if (get(body, 8) != static_cast<std::uint64_t>(sequence + 1)) corrupt();
+            std::optional<std::int64_t> timestamp;
+            if (timestamped) {
+                const auto raw = get(body, 8);
+                if (raw == 0 || raw > max_utc_micros) corrupt();
+                timestamp = static_cast<std::int64_t>(raw);
+            }
             auto d = decode(body);
             if (entries.contains(d.command_id)) corrupt();
             auto result = apply(d, sequence + 1);
-            const auto it = entries.emplace(d.command_id, Entry{std::string(body), std::move(result)}).first;
+            const auto it = entries.emplace(d.command_id, Entry{std::string(body), std::move(result), timestamp}).first;
             ordered.push_back(&it->second); ++sequence;
         }
     }
@@ -229,7 +249,11 @@ struct DurableExchange::Impl {
             if (it->second.command != command) throw std::invalid_argument("Command ID reused with different payload");
             return it->second.receipt;
         }
-        const auto bytes = frame(sequence + 1, command);
+        // Only a NEW command samples the clock; duplicate equality is still payload-only.
+        // Sample before applying anything, so a bad clock cannot mutate the book.
+        std::optional<std::int64_t> timestamp;
+        if (timestamped) timestamp = utc_now_micros();
+        const auto bytes = frame(sequence + 1, command, timestamp);
         // Domain rejects are atomic by the existing book contract. Unexpected
         // failures are never acknowledged, and all future operations fail closed.
         CommandReceipt result{sequence + 1, std::nullopt};
@@ -239,7 +263,7 @@ struct DurableExchange::Impl {
         catch (...) { ok = false; throw; }
         try {
             file.append(bytes);
-            const auto it = entries.emplace(d.command_id, Entry{std::move(command), result}).first;
+            const auto it = entries.emplace(d.command_id, Entry{std::move(command), result, timestamp}).first;
             ordered.push_back(&it->second);
             ++sequence;
         } catch (...) { ok = false; throw; }
@@ -250,6 +274,12 @@ DurableExchange::DurableExchange(const std::filesystem::path& p, JournalMode m, 
 DurableExchange::DurableExchange(const std::filesystem::path& p, JournalMode m, const std::string& epoch, std::size_t limit) {
     validate_journal_epoch(epoch);
     impl_ = std::make_unique<Impl>(p, m, limit, epoch);
+}
+DurableExchange::DurableExchange(const std::filesystem::path& p, JournalMode m, const std::string& epoch, JournalFormat format, std::size_t limit) {
+    validate_journal_epoch(epoch);
+    if (format != JournalFormat::EpochV2 && format != JournalFormat::TimestampedV3)
+        throw std::invalid_argument("Unsupported journal format");
+    impl_ = std::make_unique<Impl>(p, m, limit, epoch, format == JournalFormat::TimestampedV3);
 }
 DurableExchange::~DurableExchange() = default;
 bool DurableExchange::healthy() const noexcept { return impl_->ok; }
@@ -282,7 +312,7 @@ DeliveryBatch DurableExchange::delivery_after(const std::string& epoch, std::int
             record.open_quantity = sub.open_quantity;
             record.fills.reserve(sub.executions.size());
             for (std::size_t j = 0; j < sub.executions.size(); ++j)
-                record.fills.push_back({execution_uuid(impl_->epoch, record.command_sequence, static_cast<std::uint64_t>(j)), sub.executions[j]});
+                record.fills.push_back({execution_uuid(impl_->epoch, record.command_sequence, static_cast<std::uint64_t>(j)), sub.executions[j], entry.timestamp});
         }
         batch.records.push_back(std::move(record));
     }

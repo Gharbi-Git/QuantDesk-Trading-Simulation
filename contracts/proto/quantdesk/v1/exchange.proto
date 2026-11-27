@@ -1,0 +1,120 @@
+// Exchange-specific v1 contract reviewed by D1/D2 (approval reported by D2).
+// Trading transport and settlement are not yet enabled.
+syntax = "proto3";
+package quantdesk.v1.exchange;
+option csharp_namespace = "QuantDesk.Contracts.V1.Exchange";
+
+// Internal trusted backend-to-engine transport. Not a player API.
+service ExchangeService {
+  rpc GetStatus(StatusRequest) returns (StatusReply);
+  rpc RegisterBook(RegisterBookRequest) returns (AcceptedReceipt);
+  rpc SubmitOrder(SubmitOrderRequest) returns (AcceptedReceipt);
+  rpc CancelOrder(CancelOrderRequest) returns (AcceptedReceipt);
+  rpc GetCommandReceipt(ReceiptRequest) returns (ReceiptReply);
+  rpc GetDeliveryBatch(DeliveryRequest) returns (DeliveryBatch);
+}
+message StatusRequest {}
+message StatusReply {
+  string journal_epoch = 1;
+  bool healthy = 2;
+  int64 high_watermark = 3;
+}
+message BookKey {
+  string session_id = 1;
+  string instrument_id = 2;
+}
+message CommandIdentity {
+  string expected_journal_epoch = 1;
+  string command_id = 2;
+}
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+enum OrderState {
+  ORDER_STATE_UNSPECIFIED = 0;
+  ORDER_STATE_ACCEPTED = 1;
+  ORDER_STATE_PARTIALLY_FILLED = 2;
+  ORDER_STATE_FILLED = 3;
+  ORDER_STATE_CANCELLED = 4;
+}
+message EquityLimitOrder {
+  BookKey book = 1;
+  string order_id = 2;
+  string account_id = 3;
+  Side side = 4;
+  int64 limit_price_units = 5; // 1 unit = USD 0.0001
+  int64 quantity = 6; // whole shares
+}
+message RegisterBookRequest {
+  CommandIdentity identity = 1;
+  BookKey book = 2;
+}
+message SubmitOrderRequest {
+  CommandIdentity identity = 1;
+  EquityLimitOrder order = 2;
+}
+message CancelOrderRequest {
+  CommandIdentity identity = 1;
+  BookKey book = 2;
+  string order_id = 3;
+  string account_id = 4;
+}
+// Acknowledges the durable command, NOT financial settlement.
+message AcceptedReceipt {
+  string journal_epoch = 1;
+  string command_id = 2;
+  int64 command_sequence = 3;
+}
+message ReceiptRequest { CommandIdentity identity = 1; }
+message ReceiptReply {
+  // Absent if no accepted command was found. This is NOT a durable rejection.
+  AcceptedReceipt receipt = 1;
+}
+message DeliveryRequest {
+  string expected_journal_epoch = 1;
+  int64 after_command_sequence = 2; // 0 = start
+  uint32 max_commands = 3; // 1..256; additional size limits to be agreed
+}
+message EquityFill {
+  string execution_id = 1;
+  BookKey book = 2;
+  int64 book_execution_sequence = 3;
+  string buy_order_id = 4;
+  string sell_order_id = 5;
+  string buyer_account_id = 6;
+  string seller_account_id = 7;
+  int64 execution_price_units = 8;
+  int64 quantity = 9;
+  // Positive UTC Unix microseconds, persisted in V3 before acknowledgement.
+  // V2 fills lack timestamps and cannot be served by the trading transport.
+  int64 execution_time_utc_unix_micros = 10;
+}
+message RegisteredBook { BookKey book = 1; }
+message SubmittedOrder {
+  EquityLimitOrder order = 1;
+  OrderState state = 2;
+  int64 filled_quantity = 3;
+  int64 open_quantity = 4;
+  repeated EquityFill fills = 5; // matching order, zero or more
+}
+message CancelledOrder {
+  BookKey book = 1;
+  string order_id = 2;
+  string account_id = 3;
+}
+message DeliveryRecord {
+  int64 command_sequence = 1;
+  string command_id = 2;
+  oneof event {
+    RegisteredBook registered = 3;
+    SubmittedOrder submitted = 4;
+    CancelledOrder cancelled = 5;
+  }
+}
+message DeliveryBatch {
+  string journal_epoch = 1;
+  int64 high_watermark = 2;
+  repeated DeliveryRecord records = 3;
+}
