@@ -73,6 +73,39 @@ try
         Check((await c.GetStatusAsync()).HighWatermark==10,"no new command after retry");
         Console.WriteLine("PASS: restart preserves rejection, original payload and execution ID/time");
     }
+    var large=Path.Combine(dir.FullName,"large-journal");
+    var largeEpoch=Guid.NewGuid();
+    var largeBook=new W.BookKey { SessionId=Guid.NewGuid().ToString("D"), InstrumentId=new string('X',128) };
+    var reg=Guid.NewGuid(); var sweep=Guid.NewGuid();
+    var taker=ExchangeWire.CreateOrder(Guid.Parse(largeBook.SessionId),largeBook.InstrumentId,Guid.NewGuid(),owner,W.Side.Buy,150m,2046);
+    V.CommandReceipt sweepReceipt=null!;
+    await using(var server=await DevServer.Start(args[0],"--create-dev-journal",large,largeEpoch,2048))
+    {
+        var c=server.Client; await c.RegisterBookAsync(reg,largeBook);
+        for(int i=0;i<2046;i++)
+        {
+            var maker=ExchangeWire.CreateOrder(Guid.Parse(largeBook.SessionId),largeBook.InstrumentId,Guid.NewGuid(),other,W.Side.Sell,149m,1);
+            Check((await c.SubmitOrderAsync(Guid.NewGuid(),maker)).Record.Accepted?.Submitted is not null,"maker accepted");
+        }
+        sweepReceipt=await c.SubmitOrderAsync(sweep,taker);
+        Check(sweepReceipt.Record.Accepted.Submitted.Fills.Count==2046,"maximum fanout receipt");
+        var page=await c.GetDeliveryBatchAsync(1792,256);
+        Check(page.Records.Count==256&&page.HighWatermark==2048&&page.Records[^1].Equals(sweepReceipt.Record),"complete high-fanout page");
+        var unknown=Guid.NewGuid();
+        await MustFail(()=>c.RegisterBookAsync(unknown,largeBook),StatusCode.ResourceExhausted);
+        Check(await c.GetCommandReceiptAsync(unknown) is null,"capacity is not a durable rejection");
+        Check((await c.SubmitOrderAsync(sweep,taker)).Equals(sweepReceipt),"retry at full capacity");
+        Check((await c.GetStatusAsync()).HighWatermark==2048,"no new command at full capacity");
+    }
+    await using(var server=await DevServer.Start(args[0],"--open-dev-journal",large,largeEpoch,2048))
+    {
+        var c=server.Client;
+        Check((await c.GetCommandReceiptAsync(sweep))!.Equals(sweepReceipt),"large receipt after restart");
+        long cursor=0;
+        while(cursor<2048) {var page=await c.GetDeliveryBatchAsync(cursor,256); cursor+=page.Records.Count;}
+        Check(cursor==2048,"all pages recovered");
+    }
+    Console.WriteLine("PASS: 2048-command journal, 2046-fill receipt, complete 256-record page, capacity fencing and restart");
     Console.WriteLine("V2 OUTCOME CROSS-LANGUAGE SMOKE PASSED");
 }
 finally { dir.Delete(recursive:true); }
@@ -93,10 +126,11 @@ sealed class DevServer : IAsyncDisposable
     public OutcomeExchangeClient Client {get;}
     public int Port {get;}
     private DevServer(Process p,int port,Guid epoch){process=p;Port=port;Client=new(port,epoch);}
-    public static async Task<DevServer> Start(string exe,string mode,string file,Guid epoch)
+    public static async Task<DevServer> Start(string exe,string mode,string file,Guid epoch,int? capacity=null)
     {
         var s=new ProcessStartInfo(exe){UseShellExecute=false,RedirectStandardOutput=true,CreateNoWindow=true};
         s.ArgumentList.Add(mode);s.ArgumentList.Add(file);s.ArgumentList.Add(epoch.ToString("D"));
+        if(capacity is int cap)s.ArgumentList.Add($"--max-commands={cap}");
         var p=Process.Start(s)??throw new InvalidOperationException("Native server failed to start");
         try {
             var line=await p.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));

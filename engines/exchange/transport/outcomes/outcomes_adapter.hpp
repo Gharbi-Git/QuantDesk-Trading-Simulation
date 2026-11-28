@@ -1,6 +1,8 @@
 #pragma once
 #include "quantdesk/exchange/durable_exchange.hpp"
 #include <mutex>
+#include <iostream>
+#include <charconv>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -30,14 +32,32 @@ inline void book(const d::BookKey& b) {
 struct Identity { std::string epoch, command; };
 struct Status { std::string epoch; std::int64_t high; };
 // Owns the sole engine instance, explicitly V4. One lock covers every read/write.
-// Dev lifetime ceiling bounds worst-case matching fanout and retained state.
+// Bounded lifetime ceiling protects the unchanged 1 MiB wire contract.
+// Every fill exhausts at least one order, so total fills <= total submissions.
+// Conservative protobuf bounds: 448 bytes/fill, 384 bytes/non-fill record,
+// 128 bytes/page envelope. Includes nested length prefixes.
+inline constexpr std::int64_t default_capacity=512;
+inline constexpr std::int64_t hard_capacity=2048;
+static_assert(hard_capacity*448+256*384+128 < 1024*1024);
+inline std::int64_t parse_capacity(std::string_view arg) {
+    constexpr std::string_view prefix="--max-commands=";
+    if(!arg.starts_with(prefix)) throw std::invalid_argument("Expected --max-commands=N");
+    arg.remove_prefix(prefix.size());
+    std::int64_t n=0;
+    const auto [end,err]=std::from_chars(arg.data(),arg.data()+arg.size(),n);
+    if(err!=std::errc{}||end!=arg.data()+arg.size()||n<default_capacity||n>hard_capacity)
+        throw std::invalid_argument("Command capacity must be 512..2048");
+    return n;
+}
 class Adapter final {
 public:
-    static constexpr std::int64_t max_commands=512;
-    Adapter(const std::filesystem::path& file,d::JournalMode mode,std::string epoch)
-        : epoch_(std::move(epoch)), engine_(file,mode,epoch_,d::JournalFormat::OutcomesV4,1024*1024) {
+    Adapter(const std::filesystem::path& file,d::JournalMode mode,std::string epoch,
+            std::int64_t capacity=default_capacity)
+        : epoch_(std::move(epoch)), capacity_(checked_capacity(capacity)),
+          engine_(file,mode,epoch_,d::JournalFormat::OutcomesV4, byte_budget(capacity_)) {
         auto s=status();
-        if(s.high>max_commands) throw Failure(Fault::Capacity,"Journal exceeds dev command ceiling");
+        if(s.high>capacity_) throw Failure(Fault::Capacity,"Journal exceeds configured command ceiling");
+        report_capacity(s.high);
         // Reject history outside the dev contract; never silently rewrite old IDs.
         for(std::int64_t cursor=0;cursor<s.high;) {
             auto page=delivery(epoch_,cursor,64);
@@ -71,7 +91,17 @@ public:
         return engine_.delivery_after(epoch_,after,count);
     }
 private:
-    std::string epoch_; d::DurableExchange engine_; std::mutex mu_;
+    std::string epoch_; const std::int64_t capacity_; d::DurableExchange engine_; std::mutex mu_;
+    static std::int64_t checked_capacity(std::int64_t n) {
+        if(n<default_capacity||n>hard_capacity) throw std::invalid_argument("Command capacity must be 512..2048");
+        return n;
+    }
+    // Core V4 max frame = 2048 body + 8 framing bytes; header < 128.
+    static std::size_t byte_budget(std::int64_t n) { return 128+static_cast<std::size_t>(n)*2056; }
+    void report_capacity(std::int64_t n) const noexcept {
+        try { std::clog << "V4 journal commands=" << n << "/" << capacity_
+                       << "; configured byte ceiling=" << byte_budget(capacity_) << '\n'; } catch(...) {}
+    }
     void check_epoch(const std::string& epoch) {
         if(!engine_.healthy()) throw Failure(Fault::Unavailable,"Journal requires recovery");
         if(epoch!=epoch_) throw Failure(Fault::WrongEpoch,"Journal epoch mismatch");
@@ -80,8 +110,12 @@ private:
     std::int64_t high() { check_epoch(epoch_); return engine_.delivery_after(epoch_,0,1).high_watermark; }
     template<class F> d::CommandReceipt mutate(const Identity& i,F&& f) {
         const bool known=engine_.receipt(i.command).has_value();
-        if(!known && high()>=max_commands) throw Failure(Fault::Capacity,"Dev journal command ceiling reached");
-        try { return f(); }
+        if(!known && high()>=capacity_) throw Failure(Fault::Capacity,"Configured journal command ceiling reached; outcome not recorded");
+        try {
+            auto result=f();
+            if(!known && (result.command_sequence==capacity_*3/4 || result.command_sequence==capacity_*9/10 || result.command_sequence==capacity_)) report_capacity(result.command_sequence);
+            return result;
+        }
         catch(const std::invalid_argument&) {
             if(!engine_.healthy()) throw Failure(Fault::Unavailable,"Journal requires recovery");
             throw Failure(known?Fault::Conflict:Fault::Rejected,known?"Existing command differs or payload invalid":"Domain rejected command");

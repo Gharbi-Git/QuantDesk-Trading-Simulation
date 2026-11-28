@@ -112,7 +112,7 @@ public:
     Status SubmitOrder(grpc::ServerContext* ctx,const w::SubmitOrderRequest* r,v::CommandReceipt* out)override{return authorized(ctx,[&]{need(r->has_identity()&&r->has_order()&&r->order().has_book());auto i=identity(r->identity());const auto& p=r->order();auto b=key(p.book());receipt(adapter_,out,i,adapter_.submit(i,{p.order_id(),p.account_id(),b.session_id,b.instrument_id,side(p.side()),p.limit_price_units(),p.quantity()}));});}
     Status CancelOrder(grpc::ServerContext* ctx,const w::CancelOrderRequest* r,v::CommandReceipt* out)override{return authorized(ctx,[&]{need(r->has_identity()&&r->has_book());auto i=identity(r->identity());receipt(adapter_,out,i,adapter_.cancel(i,key(r->book()),r->order_id(),r->account_id()));});}
     Status GetCommandReceipt(grpc::ServerContext* ctx,const w::ReceiptRequest* r,v::ReceiptReply* out)override{return authorized(ctx,[&]{need(r->has_identity());auto i=identity(r->identity());auto x=adapter_.receipt(i);if(x)receipt(adapter_,out->mutable_receipt(),i,*x);});}
-    Status GetDeliveryBatch(grpc::ServerContext* ctx,const w::DeliveryRequest* r,v::DeliveryBatch* out)override{return authorized(ctx,[&]{auto page=adapter_.delivery(r->expected_journal_epoch(),r->after_command_sequence(),r->max_commands());out->set_journal_epoch(page.journal_epoch);out->set_high_watermark(page.high_watermark);for(const auto& x:page.records)record(out->add_records(),x);if(out->ByteSizeLong()>message_limit){out->Clear();throw a::Failure(a::Fault::Capacity,"Full page exceeds dev byte limit; request a smaller page, never skip a command");}});}
+    Status GetDeliveryBatch(grpc::ServerContext* ctx,const w::DeliveryRequest* r,v::DeliveryBatch* out)override{return authorized(ctx,[&]{auto page=adapter_.delivery(r->expected_journal_epoch(),r->after_command_sequence(),r->max_commands());out->set_journal_epoch(page.journal_epoch);out->set_high_watermark(page.high_watermark);for(const auto& x:page.records)record(out->add_records(),x);if(out->ByteSizeLong()>message_limit){out->Clear();throw a::Failure(a::Fault::Capacity,"Full page exceeds byte limit; request a smaller page, never skip a command");}});}
 };
 struct Running {
     Service service;int port=0;std::unique_ptr<grpc::Server> server;
@@ -128,13 +128,15 @@ int main(int argc,char** argv){try{
     const std::string mode=argc>1?argv[1]:"";
     const bool secure=mode=="--create-secure-journal"||mode=="--open-secure-journal";
     const bool plain=mode=="--create-dev-journal"||mode=="--open-dev-journal";
-    if((!secure&&!plain)||(secure&&argc!=5)||(plain&&argc!=4)){
-        std::cerr<<"Usage: qd_exchange_outcomes --create-secure-journal|--open-secure-journal <isolated-test-file> <UUIDv4> <TLS-directory>\n"
-                 <<"Legacy plaintext test modes: --create-dev-journal|--open-dev-journal <isolated-test-file> <UUIDv4>\n";return 2;
+    const int required=secure?5:4;
+    if((!secure&&!plain)||(argc!=required&&argc!=required+1)){
+        std::cerr<<"Usage: qd_exchange_outcomes --create-secure-journal|--open-secure-journal <isolated-test-file> <UUIDv4> <TLS-directory> [--max-commands=512..2048]\n"
+                 <<"Legacy plaintext test modes: --create-dev-journal|--open-dev-journal <isolated-test-file> <UUIDv4> [--max-commands=512..2048]\n";return 2;
     }
+    const auto capacity=argc==required+1?a::parse_capacity(argv[required]):a::default_capacity;
     const auto tls=secure?tls_config(argv[4]):TlsConfig{grpc::InsecureServerCredentials(),{}};
     const bool create=mode=="--create-secure-journal"||mode=="--create-dev-journal";
-    a::Adapter adapter(argv[2],create?d::JournalMode::CreateNew:d::JournalMode::OpenExisting,argv[3]);
+    a::Adapter adapter(argv[2],create?d::JournalMode::CreateNew:d::JournalMode::OpenExisting,argv[3],capacity);
     Running server(adapter,tls);
     std::cout<<(secure?"MTLS V2 ONLY: authenticated exchange at 127.0.0.1:":"DEV V2 ONLY: unencrypted exchange at 127.0.0.1:")<<server.port<<"; journal V4"<<std::endl;
     server.server->Wait();return 0;
