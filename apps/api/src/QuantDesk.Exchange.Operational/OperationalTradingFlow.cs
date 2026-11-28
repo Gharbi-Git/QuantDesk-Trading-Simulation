@@ -13,7 +13,7 @@ using V = QuantDesk.Contracts.V2.Exchange;
 namespace QuantDesk.Exchange.Operational;
 
 // Explicitly driven test-only composition. No HTTP endpoints, no runtime DDL,
-// no background tasks. All cooperating calls in this process are serialized;
+// no implicit background tasks. All cooperating calls in this process are serialized;
 // a database session advisory lock also excludes other cooperating processes.
 // M07 commits independently. No external writes/releases or second engine
 // are supported. Production admission, lock-loss fencing and lifecycle pending.
@@ -96,7 +96,9 @@ public sealed class OperationalTradingFlow
         }
         return true;
     },ct);
-    public Task<V.CommandReceipt> DispatchAsync(Guid id,CancellationToken ct=default) => Locked(async c=>{
+    public Task<V.CommandReceipt> DispatchAsync(Guid id,CancellationToken ct=default) => Locked(c=>DispatchOnConnection(c,id,ct),ct);
+    private async Task<V.CommandReceipt> DispatchOnConnection(NpgsqlConnection c,Guid id,CancellationToken ct)
+    {
         await Observe(c,ct);
         var row=await Tx(c,s=>s.ReadAsync(id,ct),ct);
         if(row.Epoch!=Epoch || (row.Kind=="submit" && row.Phase=="pending")) throw new InvalidOperationException("Command not ready for dispatch.");
@@ -123,11 +125,13 @@ public sealed class OperationalTradingFlow
         await Observe(c,ct);
         await Tx(c,async s=>{await s.RecordDecisionAsync(id,receipt,page,ct);return true;},ct);
         return receipt;
-    },ct);
+    }
     public Task<OperationalProgress> ProcessNextAsync(CancellationToken ct=default) => ProcessCore(false,ct);
     // Explicit failure injection, test-only: M07 commits, cursor must stay put.
     public Task<OperationalProgress> TestInterruptAfterEffectsAsync(CancellationToken ct=default) => ProcessCore(true,ct);
-    private Task<OperationalProgress> ProcessCore(bool interrupt,CancellationToken ct) => Locked(async c=>{
+    private Task<OperationalProgress> ProcessCore(bool interrupt,CancellationToken ct) => Locked(c=>ProcessOnConnection(c,interrupt,ct),ct);
+    private async Task<OperationalProgress> ProcessOnConnection(NpgsqlConnection c,bool interrupt,CancellationToken ct)
+    {
         var binding=await Observe(c,ct);
         var batch=await exchange.GetDeliveryBatchAsync(binding.Cursor,1,ct);
         OutcomeWire.ValidateDelivery(batch,Epoch,binding.Cursor,1);
@@ -141,6 +145,45 @@ public sealed class OperationalTradingFlow
         if(interrupt) throw new InvalidOperationException("Test interruption after effects.");
         await Tx(c,async s=>{await s.AdvanceAfterEffectsAsync(Epoch,binding.Cursor,seq,ct);return true;},ct);
         return new OperationalProgress(seq,batch.HighWatermark,true);
+    }
+    // Recovery is serialized with the existing flow. Always drain committed journal
+    // decisions before considering a new RPC. New dispatch is opt-in for fixtures only.
+    public Task<bool> RecoverOneAsync(bool resumePreparedTestCommands=false,CancellationToken ct=default) => Locked(async c=>{
+        var binding=await Observe(c,ct);
+        var page=await exchange.GetDeliveryBatchAsync(binding.Cursor,1,ct);
+        OutcomeWire.ValidateDelivery(page,Epoch,binding.Cursor,1);
+        if(page.Records.Count!=0)
+        {
+            var record=page.Records.Single();
+            var id=ExchangeWire.ParseId(OutcomeWire.CommandId(record));
+            // Check local authorization BEFORE attempting reconciliation; unknown rows fail closed.
+            var row=await Tx(c,s=>s.ReadAsync(id,ct),ct);
+            if(row.Epoch!=Epoch || (row.Kind=="submit" && row.Phase=="pending"))
+                throw new InvalidOperationException("Recovery requires authorized, reservation-confirmed intent.");
+            var receipt=await exchange.GetCommandReceiptAsync(id,ct)
+                ?? throw new InvalidDataException("Journal delivery has no durable receipt.");
+            await Observe(c,ct);
+            await Tx(c,async s=>{await s.RecordDecisionAsync(id,receipt,page,ct);return true;},ct);
+            var result=await ProcessOnConnection(c,false,ct);
+            if(!result.AppliedCommand) throw new InvalidDataException("Recovery did not advance committed delivery.");
+            return true;
+        }
+        if(!resumePreparedTestCommands) return false;
+        // Never manufacture a reservation or re-admit an unconfirmed submission.
+        // These test-only intents carry fixture admission; production revalidation is not implemented.
+        Guid? ready;
+        await using(var q=new NpgsqlCommand("""
+            SELECT command_id FROM qd_exchange_v4.commands WHERE journal_epoch=@epoch
+            AND ((kind='submit' AND phase='reserved') OR (kind IN ('register','cancel') AND phase='pending'))
+            ORDER BY created_at,command_id LIMIT 1
+            """,c))
+        {
+            q.Parameters.AddWithValue("epoch",Epoch);
+            ready=(await q.ExecuteScalarAsync(ct)) is Guid id ? id : null;
+        }
+        if(ready is null) return false;
+        await DispatchOnConnection(c,ready.Value,ct);
+        return true;
     },ct);
     private async Task Apply(NpgsqlConnection c,StoredCommand row,V.DecisionRecord record,CancellationToken ct)
     {
