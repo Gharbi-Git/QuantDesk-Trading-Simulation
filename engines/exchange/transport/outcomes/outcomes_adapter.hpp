@@ -68,19 +68,24 @@ public:
                 cursor=r.command_sequence;
             }
         }
+        if (s.high + open_orders() > capacity_)
+            throw Failure(Fault::Capacity,"Journal lacks cancellation headroom; reopen with a larger supported ceiling");
     }
     Status status() { std::scoped_lock lock(mu_); return {epoch_,high()}; }
     d::CommandReceipt register_book(const Identity& i,const d::BookKey& b) {
         std::scoped_lock lock(mu_); check(i); book(b);
-        return mutate(i,[&]{return engine_.register_book(i.command,b);});
+        return mutate(i,1,[&]{return engine_.register_book(i.command,b);});
     }
     d::CommandReceipt submit(const Identity& i,const d::LimitOrderRequest& r) {
         std::scoped_lock lock(mu_); check(i); book({r.session_id,r.instrument_id}); uuid(r.order_id); uuid(r.account_id);
-        return mutate(i,[&]{return engine_.submit(i.command,r);});
+        return mutate(i,2,[&]{return engine_.submit(i.command,r);});
     }
     d::CommandReceipt cancel(const Identity& i,const d::BookKey& b,const std::string& order,const std::string& account) {
         std::scoped_lock lock(mu_); check(i); book(b); uuid(order); uuid(account);
-        return mutate(i,[&]{return engine_.cancel(i.command,b,order,account);});
+        // Only a currently open, correctly owned order can spend its reserved slot.
+        const auto* target=engine_.view().find(b,order,account);
+        return mutate(i,target && target->is_open() ? 0 : 1,
+                      [&]{return engine_.cancel(i.command,b,order,account);});
     }
     std::optional<d::CommandReceipt> receipt(const Identity& i) {
         std::scoped_lock lock(mu_); check(i); return engine_.receipt(i.command);
@@ -108,9 +113,33 @@ private:
     }
     void check(const Identity& i) { check_epoch(i.epoch); uuid(i.command); }
     std::int64_t high() { check_epoch(epoch_); return engine_.delivery_after(epoch_,0,1).high_watermark; }
-    template<class F> d::CommandReceipt mutate(const Identity& i,F&& f) {
+    // Derive open-order count from committed accepted submissions and current
+    // order state. No secondary state to persist, and no mutation during scan.
+    // Caller holds mu_, except during single-threaded construction.
+    std::int64_t open_orders() {
+        const auto head=high();
+        std::int64_t count=0;
+        for(std::int64_t cursor=0;cursor<head;) {
+            const auto page=engine_.delivery_after(epoch_,cursor,256);
+            if(page.records.empty()) throw Failure(Fault::Unavailable,"Incomplete journal during admission scan");
+            for(const auto& r:page.records) {
+                if(r.kind==d::DeliveryKind::Submit && r.outcome==d::CommandOutcome::Accepted) {
+                    const auto* order=engine_.view().find(r.key,r.order_id,r.account_id);
+                    if(!order) throw Failure(Fault::Unavailable,"Accepted order missing from recovered book");
+                    if(order->is_open()) ++count;
+                }
+                cursor=r.command_sequence;
+            }
+        }
+        return count;
+    }
+    template<class F> d::CommandReceipt mutate(const Identity& i,std::int64_t required,F&& f) {
         const bool known=engine_.receipt(i.command).has_value();
-        if(!known && high()>=capacity_) throw Failure(Fault::Capacity,"Configured journal command ceiling reached; outcome not recorded");
+        if(!known) {
+            const auto head=high();
+            if(head>=capacity_ || (2*head+required>capacity_ && head+open_orders()+required>capacity_))
+                throw Failure(Fault::Capacity,"Cancellation headroom protected; command outcome not recorded");
+        }
         try {
             auto result=f();
             if(!known && (result.command_sequence==capacity_*3/4 || result.command_sequence==capacity_*9/10 || result.command_sequence==capacity_)) report_capacity(result.command_sequence);
